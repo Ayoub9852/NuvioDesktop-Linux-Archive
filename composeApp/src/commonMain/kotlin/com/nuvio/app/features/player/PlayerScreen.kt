@@ -252,14 +252,6 @@ fun PlayerScreen(
             activeEpisodeNumber,
         ) { mutableStateOf(false) }
 
-        ManagePlayerCursorVisibility(
-            visible = !hoverDrivenChrome ||
-                cursorVisible ||
-                controlsVisible ||
-                playbackSnapshot.isLoading ||
-                errorMessage != null,
-        )
-
         val backdropArtwork = background ?: poster
         val displayedPositionMs = scrubbingPositionMs ?: playbackSnapshot.positionMs
         val isEpisode = activeSeasonNumber != null && activeEpisodeNumber != null
@@ -1229,28 +1221,86 @@ fun PlayerScreen(
         }
 
         LaunchedEffect(
-            controlsVisible,
-            pointerActivitySerial,
-            playbackSnapshot.isPlaying,
-            playbackSnapshot.isLoading,
-            playbackSnapshot.isEnded,
-            errorMessage,
             hoverDrivenChrome,
+            pointerActivitySerial,
+            controlsVisible,
+            playerControlsLocked,
+            playbackSnapshot.isPlaying,
+            showSourcesPanel,
+            showEpisodesPanel,
+            showAudioModal,
+            showSubtitleModal,
+            showSubmitIntroModal,
         ) {
-            if (!controlsVisible || playbackSnapshot.isLoading || playbackSnapshot.isEnded || errorMessage != null) {
-                return@LaunchedEffect
-            }
-            if (!hoverDrivenChrome && !playbackSnapshot.isPlaying) {
-                return@LaunchedEffect
-            }
+            if (!hoverDrivenChrome) return@LaunchedEffect
+            if (!controlsVisible) return@LaunchedEffect
+            if (playerControlsLocked) return@LaunchedEffect
+            if (!playbackSnapshot.isPlaying) return@LaunchedEffect
+
+            val blockingPanelOpen =
+                showSourcesPanel ||
+                    showEpisodesPanel ||
+                    showAudioModal ||
+                    showSubtitleModal ||
+                    showSubmitIntroModal
+            if (blockingPanelOpen) return@LaunchedEffect
+
             delay(PlayerControlsAutoHideDelayMs)
             controlsVisible = false
             isHovering = false
-            if (hoverDrivenChrome) {
-                delay(PlayerCursorAutoHideDelayMs)
+        }
+
+        val cursorHoldReasonVisible =
+            controlsVisible ||
+                playbackSnapshot.isLoading ||
+                errorMessage != null ||
+                lockedOverlayVisible ||
+                pausedOverlayVisible ||
+                scrubbingPositionMs != null ||
+                showSourcesPanel ||
+                showEpisodesPanel ||
+                showAudioModal ||
+                showSubtitleModal ||
+                showSubmitIntroModal ||
+                liveGestureFeedback != null ||
+                gestureFeedback != null
+        val cursorHoldReasonVisibleState = rememberUpdatedState(cursorHoldReasonVisible)
+
+        LaunchedEffect(
+            hoverDrivenChrome,
+            cursorHoldReasonVisible,
+            pointerActivitySerial,
+            playerControlsLocked,
+        ) {
+            if (!hoverDrivenChrome) {
+                cursorVisible = true
+                return@LaunchedEffect
+            }
+
+            if (playerControlsLocked) {
+                cursorVisible = false
+                return@LaunchedEffect
+            }
+
+            if (cursorHoldReasonVisible) {
+                cursorVisible = true
+                return@LaunchedEffect
+            }
+
+            // Keep cursor visible briefly after controls/chrome have just hidden.
+            cursorVisible = true
+            delay(PlayerCursorAutoHideDelayMs)
+
+            if (!cursorHoldReasonVisibleState.value) {
                 cursorVisible = false
             }
         }
+
+        ManagePlayerCursorVisibility(
+            visible = !hoverDrivenChrome ||
+                cursorVisible ||
+                cursorHoldReasonVisible,
+        )
 
         LaunchedEffect(playerControlsLocked, lockedOverlayVisible) {
             if (!playerControlsLocked || !lockedOverlayVisible) {

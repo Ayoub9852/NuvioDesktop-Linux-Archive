@@ -2,8 +2,13 @@ package com.nuvio.app
 
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
+import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.application
+import androidx.compose.ui.window.rememberWindowState
 import com.nuvio.app.core.build.AppVersionConfig
 import com.nuvio.app.core.network.SupabaseConfig
 import com.nuvio.app.desktop.DesktopPlayerRegistry
@@ -13,6 +18,7 @@ import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.nuvio_window_icon
 import org.jetbrains.compose.resources.painterResource
 import java.awt.Color as AwtColor
+import java.awt.GraphicsEnvironment
 import kotlin.system.exitProcess
 
 private val DesktopWindowBackground = AwtColor(0x0D, 0x0D, 0x0D)
@@ -21,6 +27,21 @@ private fun configureMacOsNativeAppearance() {
     val osName = System.getProperty("os.name")?.lowercase() ?: return
     if (!osName.contains("mac")) return
     System.setProperty("apple.awt.application.appearance", "NSAppearanceNameDarkAqua")
+}
+
+private fun computeStartupWindowSize(): DpSize {
+    val displayBounds = GraphicsEnvironment.getLocalGraphicsEnvironment()
+        .defaultScreenDevice
+        .defaultConfiguration
+        .bounds
+
+    val isLargeDisplay = displayBounds.width > 1920 || displayBounds.height > 1080
+    val targetWidth = if (isLargeDisplay) 1920 else 1280
+    val targetHeight = if (isLargeDisplay) 1080 else 720
+
+    val clampedWidth = targetWidth.coerceAtMost(displayBounds.width).coerceAtLeast(1)
+    val clampedHeight = targetHeight.coerceAtMost(displayBounds.height).coerceAtLeast(1)
+    return DpSize(clampedWidth.dp, clampedHeight.dp)
 }
 
 fun main() {
@@ -63,6 +84,10 @@ fun main() {
     configureMacOsNativeAppearance()
     application {
         DesktopRuntimeLog.info("window composition start pid=$pid")
+        val startupWindowState = rememberWindowState(
+            size = computeStartupWindowSize(),
+            position = WindowPosition.Aligned(Alignment.Center),
+        )
         Window(
             onCloseRequest = {
                 val closeStartMs = System.currentTimeMillis()
@@ -95,6 +120,7 @@ fun main() {
             },
             title = "Nuvio",
             icon = painterResource(Res.drawable.nuvio_window_icon),
+            state = startupWindowState,
         ) {
             DisposableEffect(window) {
                 window.background = DesktopWindowBackground
