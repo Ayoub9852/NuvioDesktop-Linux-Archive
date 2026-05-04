@@ -5,6 +5,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -30,8 +31,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -70,6 +78,8 @@ import kotlin.math.roundToLong
 import kotlin.math.roundToInt
 
 private const val PlaybackProgressPersistIntervalMs = 60_000L
+private const val PlayerControlsAutoHideDelayMs = 3_500L
+private const val PlayerCursorAutoHideDelayMs = 700L
 private const val PlayerDoubleTapSeekStepMs = 10_000L
 private const val PlayerDoubleTapSeekResetDelayMs = 800L
 private const val PlayerLockedOverlayDurationMs = 2_000L
@@ -163,8 +173,22 @@ fun PlayerScreen(
         val airsPrefix = stringResource(Res.string.compose_player_airs_prefix)
         val tbaLabel = stringResource(Res.string.compose_player_tba)
         val gestureController = rememberPlayerGestureController()
+        val fullscreenController = rememberPlayerFullscreenController()
+        val playerFocusRequester = remember { FocusRequester() }
+        val hoverDrivenChrome = !usesNativePlayerChrome && !usesAnimatedPlayerChrome
         var controlsVisible by rememberSaveable { mutableStateOf(true) }
         var playerControlsLocked by rememberSaveable { mutableStateOf(false) }
+        var isHovering by remember { mutableStateOf(false) }
+        var cursorVisible by remember { mutableStateOf(true) }
+        var pointerActivitySerial by remember { mutableStateOf(0) }
+        val setControlsVisibleFromHover = rememberUpdatedState { shouldShow: Boolean ->
+            if (shouldShow) {
+                controlsVisible = true
+                cursorVisible = true
+                pointerActivitySerial += 1
+            }
+            isHovering = shouldShow
+        }
         // Active playback state (mutable to support source/episode switching)
         var activeSourceUrl by rememberSaveable { mutableStateOf(sourceUrl) }
         var activeSourceAudioUrl by rememberSaveable { mutableStateOf(sourceAudioUrl) }
@@ -227,6 +251,15 @@ fun PlayerScreen(
             activeSeasonNumber,
             activeEpisodeNumber,
         ) { mutableStateOf(false) }
+
+        ManagePlayerCursorVisibility(
+            visible = !hoverDrivenChrome ||
+                cursorVisible ||
+                controlsVisible ||
+                playbackSnapshot.isLoading ||
+                errorMessage != null,
+        )
+
         val backdropArtwork = background ?: poster
         val displayedPositionMs = scrubbingPositionMs ?: playbackSnapshot.positionMs
         val isEpisode = activeSeasonNumber != null && activeEpisodeNumber != null
@@ -402,6 +435,7 @@ fun PlayerScreen(
         val onBackWithProgress = remember(onBack, playbackSession, playbackSnapshot) {
             {
                 flushWatchProgress()
+                playerController?.release()
                 onBack()
             }
         }
@@ -538,6 +572,18 @@ fun PlayerScreen(
             playerControlsLocked = false
             lockedOverlayVisible = false
             controlsVisible = true
+        }
+
+        fun toggleFullscreen() {
+            if (!fullscreenController.isFullscreenSupported) return
+            fullscreenController.toggleFullscreen()
+            controlsVisible = true
+            cursorVisible = true
+            pointerActivitySerial += 1
+            scope.launch {
+                delay(50)
+                playerFocusRequester.requestFocus()
+            }
         }
 
         fun showSeekFeedback(direction: PlayerSeekDirection, amountMs: Long) {
@@ -723,6 +769,10 @@ fun PlayerScreen(
                 revealLockedOverlay()
                 return@rememberUpdatedState
             }
+            if (hoverDrivenChrome) {
+                setControlsVisibleFromHover.value(true)
+                return@rememberUpdatedState
+            }
             val centerStart = layoutSize.width * PlayerLeftGestureBoundary
             val centerEnd = layoutSize.width * PlayerRightGestureBoundary
             if (controlsVisible && offset.x in centerStart..centerEnd) {
@@ -744,6 +794,8 @@ fun PlayerScreen(
                 offset.x > layoutSize.width * PlayerRightGestureBoundary -> {
                     handleDoubleTapSeek(PlayerSeekDirection.Forward)
                 }
+
+                hoverDrivenChrome -> setControlsVisibleFromHover.value(true)
 
                 else -> controlsVisible = !controlsVisible
             }
@@ -1172,12 +1224,28 @@ fun PlayerScreen(
             initialSeekApplied = true
         }
 
-        LaunchedEffect(controlsVisible, playbackSnapshot.isPlaying, playbackSnapshot.isLoading, errorMessage) {
-            if (!controlsVisible || !playbackSnapshot.isPlaying || playbackSnapshot.isLoading || errorMessage != null) {
+        LaunchedEffect(
+            controlsVisible,
+            pointerActivitySerial,
+            playbackSnapshot.isPlaying,
+            playbackSnapshot.isLoading,
+            playbackSnapshot.isEnded,
+            errorMessage,
+            hoverDrivenChrome,
+        ) {
+            if (!controlsVisible || playbackSnapshot.isLoading || playbackSnapshot.isEnded || errorMessage != null) {
                 return@LaunchedEffect
             }
-            delay(3500)
+            if (!hoverDrivenChrome && !playbackSnapshot.isPlaying) {
+                return@LaunchedEffect
+            }
+            delay(PlayerControlsAutoHideDelayMs)
             controlsVisible = false
+            isHovering = false
+            if (hoverDrivenChrome) {
+                delay(PlayerCursorAutoHideDelayMs)
+                cursorVisible = false
+            }
         }
 
         LaunchedEffect(playerControlsLocked, lockedOverlayVisible) {
@@ -1364,10 +1432,46 @@ fun PlayerScreen(
             }
         }
 
+        LaunchedEffect(Unit) {
+            playerFocusRequester.requestFocus()
+        }
+
+        LaunchedEffect(fullscreenController.isFullscreen) {
+            playerFocusRequester.requestFocus()
+        }
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .onPreviewKeyEvent { event ->
+                    if (event.type == KeyEventType.KeyUp && event.key == Key.F) {
+                        toggleFullscreen()
+                        true
+                    } else {
+                        false
+                    }
+                }
+                .focusRequester(playerFocusRequester)
+                .focusable()
                 .onSizeChanged { layoutSize = it }
+                .pointerInput(hoverDrivenChrome) {
+                    if (!hoverDrivenChrome) return@pointerInput
+                    awaitEachGesture {
+                        var lastPosition: Offset? = null
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull()
+                            if (change != null) {
+                                val currentPosition = change.position
+                                val moved = lastPosition == null || currentPosition != lastPosition
+                                lastPosition = currentPosition
+                                if (moved) {
+                                    setControlsVisibleFromHover.value(true)
+                                }
+                            }
+                        }
+                    }
+                }
                 .pointerInput(layoutSize) {
                     detectTapGestures(
                         onPress = {
@@ -1585,6 +1689,8 @@ fun PlayerScreen(
                     metrics = metrics,
                     resizeMode = resizeMode,
                     isLocked = playerControlsLocked,
+                    isFullscreenSupported = fullscreenController.isFullscreenSupported,
+                    isFullscreen = fullscreenController.isFullscreen,
                     onLockToggle = {
                         if (playerControlsLocked) {
                             unlockPlayerControls()
@@ -1592,6 +1698,7 @@ fun PlayerScreen(
                             lockPlayerControls()
                         }
                     },
+                    onFullscreenClick = ::toggleFullscreen,
                     onBack = onBackWithProgress,
                     onTogglePlayback = ::togglePlayback,
                     onSeekBack = { seekBy(-10_000L) },
