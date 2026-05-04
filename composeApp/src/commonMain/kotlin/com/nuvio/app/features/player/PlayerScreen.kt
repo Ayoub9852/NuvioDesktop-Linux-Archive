@@ -181,11 +181,14 @@ fun PlayerScreen(
         var isHovering by remember { mutableStateOf(false) }
         var cursorVisible by remember { mutableStateOf(true) }
         var pointerActivitySerial by remember { mutableStateOf(0) }
+        fun revealPlayerChrome() {
+            controlsVisible = true
+            cursorVisible = true
+            pointerActivitySerial += 1
+        }
         val setControlsVisibleFromHover = rememberUpdatedState { shouldShow: Boolean ->
-            if (shouldShow) {
-                controlsVisible = true
-                cursorVisible = true
-                pointerActivitySerial += 1
+            if (shouldShow && !playerControlsLocked) {
+                revealPlayerChrome()
             }
             isHovering = shouldShow
         }
@@ -540,12 +543,17 @@ fun PlayerScreen(
         fun revealLockedOverlay() {
             controlsVisible = false
             lockedOverlayVisible = true
+            cursorVisible = true
+            pointerActivitySerial += 1
         }
 
         fun lockPlayerControls() {
             playerControlsLocked = true
             controlsVisible = false
             lockedOverlayVisible = false
+            cursorVisible = false
+            isHovering = false
+            pointerActivitySerial += 1
             pausedOverlayVisible = false
             scrubbingPositionMs = null
             gestureMessageJob?.cancel()
@@ -563,15 +571,14 @@ fun PlayerScreen(
         fun unlockPlayerControls() {
             playerControlsLocked = false
             lockedOverlayVisible = false
-            controlsVisible = true
+            isHovering = false
+            revealPlayerChrome()
         }
 
         fun toggleFullscreen() {
             if (!fullscreenController.isFullscreenSupported) return
             fullscreenController.toggleFullscreen()
-            controlsVisible = true
-            cursorVisible = true
-            pointerActivitySerial += 1
+            revealPlayerChrome()
             scope.launch {
                 delay(50)
                 playerFocusRequester.requestFocus()
@@ -660,12 +667,12 @@ fun PlayerScreen(
                 shouldPlay = true
                 playerController?.play()
             }
-            controlsVisible = true
+            revealPlayerChrome()
         }
 
         fun seekBy(offsetMs: Long) {
             playerController?.seekBy(offsetMs)
-            controlsVisible = true
+            revealPlayerChrome()
             when {
                 offsetMs > 0L -> showSeekFeedback(PlayerSeekDirection.Forward, offsetMs)
                 offsetMs < 0L -> showSeekFeedback(PlayerSeekDirection.Backward, abs(offsetMs))
@@ -717,7 +724,7 @@ fun PlayerScreen(
                     PlayerResizeMode.Zoom -> resizeModeZoomLabel
                 },
             )
-            controlsVisible = true
+            revealPlayerChrome()
         }
 
         fun cyclePlaybackSpeed() {
@@ -726,7 +733,7 @@ fun PlayerScreen(
             val next = speeds.firstOrNull { it > current + 0.01f } ?: speeds.first()
             playerController?.setPlaybackSpeed(next)
             showGestureMessage(formatPlaybackSpeedLabel(next))
-            controlsVisible = true
+            revealPlayerChrome()
         }
 
         fun activateHoldToSpeed() {
@@ -846,7 +853,7 @@ fun PlayerScreen(
             activeInitialPositionMs = currentPositionMs
             activeInitialProgressFraction = null
             showSourcesPanel = false
-            controlsVisible = true
+            revealPlayerChrome()
         }
 
         fun switchToEpisodeStream(stream: StreamItem, episode: MetaVideo) {
@@ -910,7 +917,7 @@ fun PlayerScreen(
             activeVideoId = episode.id
             activeInitialPositionMs = epResumePositionMs
             activeInitialProgressFraction = epResumeFraction
-            controlsVisible = true
+            revealPlayerChrome()
         }
 
         fun switchToDownloadedEpisode(downloadItem: DownloadItem, episode: MetaVideo) {
@@ -958,7 +965,7 @@ fun PlayerScreen(
             activeVideoId = resolvedVideoId
             activeInitialPositionMs = epResumePositionMs
             activeInitialProgressFraction = epResumeFraction
-            controlsVisible = true
+            revealPlayerChrome()
         }
 
         fun playNextEpisode() {
@@ -1250,35 +1257,37 @@ fun PlayerScreen(
             isHovering = false
         }
 
-        val cursorHoldReasonVisible =
-            controlsVisible ||
-                playbackSnapshot.isLoading ||
-                errorMessage != null ||
-                lockedOverlayVisible ||
-                pausedOverlayVisible ||
-                scrubbingPositionMs != null ||
-                showSourcesPanel ||
+        val blockingPanelOpen =
+            showSourcesPanel ||
                 showEpisodesPanel ||
                 showAudioModal ||
                 showSubtitleModal ||
-                showSubmitIntroModal ||
-                liveGestureFeedback != null ||
-                gestureFeedback != null
+                showSubmitIntroModal
+
+        val cursorHoldReasonVisible =
+            lockedOverlayVisible ||
+                (
+                    !playerControlsLocked &&
+                        (
+                            controlsVisible ||
+                                playbackSnapshot.isLoading ||
+                                errorMessage != null ||
+                                pausedOverlayVisible ||
+                                scrubbingPositionMs != null ||
+                                blockingPanelOpen ||
+                                liveGestureFeedback != null ||
+                                gestureFeedback != null
+                            )
+                    )
         val cursorHoldReasonVisibleState = rememberUpdatedState(cursorHoldReasonVisible)
 
         LaunchedEffect(
             hoverDrivenChrome,
             cursorHoldReasonVisible,
             pointerActivitySerial,
-            playerControlsLocked,
         ) {
             if (!hoverDrivenChrome) {
                 cursorVisible = true
-                return@LaunchedEffect
-            }
-
-            if (playerControlsLocked) {
-                cursorVisible = false
                 return@LaunchedEffect
             }
 
@@ -1949,7 +1958,7 @@ fun PlayerScreen(
                 },
                 onDismiss = {
                     showSourcesPanel = false
-                    controlsVisible = true
+                    revealPlayerChrome()
                 },
             )
 
@@ -2011,7 +2020,7 @@ fun PlayerScreen(
                         showEpisodesPanel = false
                         episodeStreamsPanelState = EpisodeStreamsPanelState()
                         PlayerStreamsRepository.clearEpisodeStreams()
-                        controlsVisible = true
+                        revealPlayerChrome()
                     },
                 )
             }
