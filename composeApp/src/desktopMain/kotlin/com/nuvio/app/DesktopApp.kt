@@ -6,6 +6,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
+import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
@@ -15,6 +16,7 @@ import com.nuvio.app.core.network.SupabaseConfig
 import com.nuvio.app.desktop.DesktopSingleInstanceManager
 import com.nuvio.app.desktop.DesktopPlayerRegistry
 import com.nuvio.app.desktop.DesktopRuntimeLog
+import com.nuvio.app.desktop.DesktopWindowStateStore
 import com.nuvio.app.desktop.WindowsUrlProtocolRegistrar
 import com.nuvio.app.desktop.WindowsNativeBootstrap
 import com.nuvio.app.features.trakt.TraktAuthRepository
@@ -52,6 +54,18 @@ private fun computeStartupWindowSize(): DpSize {
     val clampedWidth = targetWidth.coerceAtMost(displayBounds.width).coerceAtLeast(1)
     val clampedHeight = targetHeight.coerceAtMost(displayBounds.height).coerceAtLeast(1)
     return DpSize(clampedWidth.dp, clampedHeight.dp)
+}
+
+private fun clampDpSizeToDisplay(size: DpSize): DpSize {
+    val displayBounds = GraphicsEnvironment.getLocalGraphicsEnvironment()
+        .defaultScreenDevice
+        .defaultConfiguration
+        .bounds
+    val maxW = displayBounds.width.coerceAtLeast(1)
+    val maxH = displayBounds.height.coerceAtLeast(1)
+    val w = size.width.value.toInt().coerceIn(400, maxW)
+    val h = size.height.value.toInt().coerceIn(300, maxH)
+    return DpSize(w.dp, h.dp)
 }
 
 fun main(args: Array<String>) {
@@ -119,12 +133,24 @@ fun main(args: Array<String>) {
     configureMacOsNativeAppearance()
     application {
         DesktopRuntimeLog.info("window composition start pid=$pid")
+        val defaultWindowSize = computeStartupWindowSize()
+        val savedWindow = DesktopWindowStateStore.load()
+        val initialSize = savedWindow?.let {
+            clampDpSizeToDisplay(DpSize(it.widthDp.dp, it.heightDp.dp))
+        } ?: defaultWindowSize
+        val initialPlacement = if (savedWindow?.maximized == true) {
+            WindowPlacement.Maximized
+        } else {
+            WindowPlacement.Floating
+        }
         val startupWindowState = rememberWindowState(
-            size = computeStartupWindowSize(),
+            size = initialSize,
             position = WindowPosition.Aligned(Alignment.Center),
+            placement = initialPlacement,
         )
         Window(
             onCloseRequest = {
+                DesktopWindowStateStore.save(startupWindowState.size, startupWindowState.placement)
                 val closeStartMs = System.currentTimeMillis()
                 DesktopRuntimeLog.info("windowClose requested pid=$pid")
                 DesktopRuntimeLog.logNonDaemonThreads("windowClose:beforeCleanup")
