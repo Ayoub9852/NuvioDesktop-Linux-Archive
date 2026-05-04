@@ -9,19 +9,29 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import com.nuvio.app.core.deeplink.handleAppUrl
 import com.nuvio.app.core.build.AppVersionConfig
 import com.nuvio.app.core.network.SupabaseConfig
+import com.nuvio.app.desktop.DesktopSingleInstanceManager
 import com.nuvio.app.desktop.DesktopPlayerRegistry
 import com.nuvio.app.desktop.DesktopRuntimeLog
+import com.nuvio.app.desktop.WindowsUrlProtocolRegistrar
 import com.nuvio.app.desktop.WindowsNativeBootstrap
+import com.nuvio.app.features.trakt.TraktAuthRepository
+import io.ktor.http.Url
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.nuvio_window_icon
 import org.jetbrains.compose.resources.painterResource
+import java.awt.EventQueue
+import java.awt.Frame
+import java.awt.Window as AwtWindow
 import java.awt.Color as AwtColor
 import java.awt.GraphicsEnvironment
 import kotlin.system.exitProcess
 
 private val DesktopWindowBackground = AwtColor(0x0D, 0x0D, 0x0D)
+@Volatile
+private var desktopMainWindow: AwtWindow? = null
 
 private fun configureMacOsNativeAppearance() {
     val osName = System.getProperty("os.name")?.lowercase() ?: return
@@ -44,7 +54,7 @@ private fun computeStartupWindowSize(): DpSize {
     return DpSize(clampedWidth.dp, clampedHeight.dp)
 }
 
-fun main() {
+fun main(args: Array<String>) {
     DesktopRuntimeLog.initialize()
     DesktopRuntimeLog.installGlobalExceptionHandlers()
     val pid = DesktopRuntimeLog.processPid()
@@ -80,6 +90,22 @@ fun main() {
     DesktopRuntimeLog.info("java.library.path=${System.getProperty("java.library.path") ?: "unset"}")
     DesktopRuntimeLog.info("supabase.url=${SupabaseConfig.URL}")
     DesktopRuntimeLog.info("supabase.anon.present=${SupabaseConfig.ANON_KEY.isNotBlank()} length=${SupabaseConfig.ANON_KEY.length}")
+    ensureWindowsUrlProtocolRegistration()
+    val startupUrls = extractStartupDeepLinks(args)
+    val singleInstanceStartResult = DesktopSingleInstanceManager.startPrimaryReceiver(
+        onUrlReceived = ::handleIncomingDeepLink,
+        onFocusRequested = ::focusMainWindow,
+    )
+    val singleInstance = when (singleInstanceStartResult) {
+        DesktopSingleInstanceManager.StartResult.Secondary -> {
+            val forwarded = DesktopSingleInstanceManager.forwardToPrimary(startupUrls)
+            DesktopRuntimeLog.info("secondary instance forward result=$forwarded deepLinkCount=${startupUrls.size}")
+            exitProcess(0)
+        }
+        is DesktopSingleInstanceManager.StartResult.Primary -> singleInstanceStartResult
+    }
+    Runtime.getRuntime().addShutdownHook(Thread { singleInstance.close() })
+    startupUrls.forEach(::handleIncomingDeepLink)
     WindowsNativeBootstrap.bootstrap()
     configureMacOsNativeAppearance()
     application {
@@ -123,15 +149,66 @@ fun main() {
             state = startupWindowState,
         ) {
             DisposableEffect(window) {
+                desktopMainWindow = window
                 window.background = DesktopWindowBackground
                 window.contentPane.background = DesktopWindowBackground
                 window.rootPane.background = DesktopWindowBackground
-                onDispose { }
+                onDispose { desktopMainWindow = null }
             }
 
             CompositionLocalProvider(LocalDesktopWindow provides window) {
                 App()
             }
+        }
+    }
+}
+
+private fun ensureWindowsUrlProtocolRegistration() {
+    val result = WindowsUrlProtocolRegistrar.ensureRegisteredForCurrentExecutable()
+    result.diagnostics.forEach { line ->
+        DesktopRuntimeLog.info("protocol registration detail: $line")
+    }
+    if (result.success) {
+        DesktopRuntimeLog.info("protocol registration: ${result.message}")
+    } else {
+        DesktopRuntimeLog.error("protocol registration failed: ${result.message}")
+        TraktAuthRepository.onAuthLaunchFailed(
+            "Unable to register Windows protocol nuvio://. Trakt sign-in callback may fail.",
+        )
+    }
+}
+
+private fun extractStartupDeepLinks(args: Array<String>): List<String> =
+    args.filter { it.startsWith("nuvio://", ignoreCase = true) }
+
+private fun handleIncomingDeepLink(callbackUrl: String) {
+    DesktopRuntimeLog.info("received startup deep link ${sanitizeDeepLinkForLog(callbackUrl)}")
+    handleAppUrl(callbackUrl)
+    focusMainWindow()
+}
+
+private fun focusMainWindow() {
+    val window = desktopMainWindow ?: return
+    EventQueue.invokeLater {
+        if (window is Frame && window.state == Frame.ICONIFIED) {
+            window.state = Frame.NORMAL
+        }
+        window.isVisible = true
+        window.toFront()
+        window.requestFocus()
+    }
+}
+
+private fun sanitizeDeepLinkForLog(url: String): String {
+    val parsed = runCatching { Url(url) }.getOrNull() ?: return "unparsed"
+    val keys = parsed.parameters.names().sorted()
+    val safeKeys = keys.joinToString(separator = ",")
+    return buildString {
+        append("scheme=").append(parsed.protocol.name)
+        append(" host=").append(parsed.host)
+        append(" path=").append(parsed.encodedPath)
+        if (safeKeys.isNotBlank()) {
+            append(" queryKeys=").append(safeKeys)
         }
     }
 }

@@ -123,6 +123,12 @@ Source: "$($AppDir.Replace('\', '\\'))\*"; DestDir: "{app}"; Flags: recursesubdi
 Name: "{group}\Nuvio"; Filename: "{app}\Nuvio.exe"; IconFilename: "$($AppIcon.Replace('\', '\\'))"
 Name: "{autodesktop}\Nuvio"; Filename: "{app}\Nuvio.exe"; IconFilename: "$($AppIcon.Replace('\', '\\'))"; Tasks: desktopicon
 
+[Registry]
+Root: HKCU; Subkey: "Software\Classes\nuvio"; ValueType: string; ValueData: "URL:Nuvio Protocol"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\nuvio"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\nuvio\DefaultIcon"; ValueType: string; ValueData: """{app}\Nuvio.exe"",0"
+Root: HKCU; Subkey: "Software\Classes\nuvio\shell\open\command"; ValueType: string; ValueData: """{app}\Nuvio.exe"" ""%1"""
+
 [Run]
 Filename: "{app}\Nuvio.exe"; Description: "{cm:LaunchProgram,Nuvio}"; Flags: nowait postinstall skipifsilent
 "@
