@@ -92,19 +92,28 @@ fun main(args: Array<String>) {
     DesktopRuntimeLog.info("supabase.anon.present=${SupabaseConfig.ANON_KEY.isNotBlank()} length=${SupabaseConfig.ANON_KEY.length}")
     ensureWindowsUrlProtocolRegistration()
     val startupUrls = extractStartupDeepLinks(args)
-    val singleInstanceStartResult = DesktopSingleInstanceManager.startPrimaryReceiver(
-        onUrlReceived = ::handleIncomingDeepLink,
-        onFocusRequested = ::focusMainWindow,
-    )
-    val singleInstance = when (singleInstanceStartResult) {
-        DesktopSingleInstanceManager.StartResult.Secondary -> {
-            val forwarded = DesktopSingleInstanceManager.forwardToPrimary(startupUrls)
-            DesktopRuntimeLog.info("secondary instance forward result=$forwarded deepLinkCount=${startupUrls.size}")
+    when (
+        val ipcResult = DesktopSingleInstanceManager.resolveStartup(
+            startupUrls = startupUrls,
+            onUrlReceived = ::handleIncomingDeepLink,
+            onFocusRequested = ::focusMainWindow,
+        )
+    ) {
+        DesktopSingleInstanceManager.StartResult.ForwardedToPrimary -> {
+            DesktopRuntimeLog.info(
+                "single-instance: exiting after forwarding deepLinkCount=${startupUrls.size} to primary",
+            )
             exitProcess(0)
         }
-        is DesktopSingleInstanceManager.StartResult.Primary -> singleInstanceStartResult
+
+        is DesktopSingleInstanceManager.StartResult.Primary -> {
+            Runtime.getRuntime().addShutdownHook(Thread { ipcResult.close() })
+        }
+
+        DesktopSingleInstanceManager.StartResult.NoPrimaryAvailable -> {
+            // IPC disabled; full app still starts (no second short-circuit exit).
+        }
     }
-    Runtime.getRuntime().addShutdownHook(Thread { singleInstance.close() })
     startupUrls.forEach(::handleIncomingDeepLink)
     WindowsNativeBootstrap.bootstrap()
     configureMacOsNativeAppearance()
