@@ -786,6 +786,10 @@ fun PlayerScreen(
                 revealLockedOverlay()
                 return@rememberUpdatedState
             }
+            if (fullscreenController.isFullscreenSupported) {
+                toggleFullscreen()
+                return@rememberUpdatedState
+            }
             when {
                 offset.x < layoutSize.width * PlayerLeftGestureBoundary -> {
                     handleDoubleTapSeek(PlayerSeekDirection.Backward)
