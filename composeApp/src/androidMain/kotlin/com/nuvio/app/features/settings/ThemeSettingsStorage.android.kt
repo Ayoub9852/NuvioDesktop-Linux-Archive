@@ -18,6 +18,7 @@ actual object ThemeSettingsStorage {
     private const val selectedThemeKey = "selected_theme"
     private const val amoledEnabledKey = "amoled_enabled"
     private const val selectedAppLanguageKey = "selected_app_language"
+    private const val lastSelectedAppLanguageKey = "last_selected_app_language"
     private val profileScopedSyncKeys = listOf(selectedThemeKey, amoledEnabledKey)
     private val globalSyncKeys = listOf(selectedAppLanguageKey)
 
@@ -25,7 +26,8 @@ actual object ThemeSettingsStorage {
 
     fun initialize(context: Context) {
         preferences = context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
-        applySelectedAppLanguage(loadSelectedAppLanguage() ?: AppLanguage.ENGLISH.code)
+        val language = AppLanguage.fromSystemCodeOrEnglish(loadSelectedAppLanguage())
+        applySelectedAppLanguage(language.code)
     }
 
     actual fun loadSelectedTheme(): String? =
@@ -52,17 +54,26 @@ actual object ThemeSettingsStorage {
     }
 
     actual fun loadSelectedAppLanguage(): String? {
-        val value = preferences?.getString(selectedAppLanguageKey, null)
-        if (value != null) return value
-        val legacy = preferences?.getString(ProfileScopedKey.of(selectedAppLanguageKey), null)
-        if (legacy != null) saveSelectedAppLanguage(legacy)
-        return legacy
+        val profileValue = loadProfileSelectedAppLanguage()
+        if (profileValue != null) return profileValue
+
+        val lastValue = preferences?.getString(lastSelectedAppLanguageKey, null)
+        if (lastValue != null) return lastValue
+
+        val legacyGlobal = preferences?.getString(selectedAppLanguageKey, null)
+        if (legacyGlobal != null) {
+            saveSelectedAppLanguage(legacyGlobal)
+            return legacyGlobal
+        }
+
+        return AppLanguageDefaults.systemLanguageCode()
     }
 
     actual fun saveSelectedAppLanguage(languageCode: String) {
         preferences
             ?.edit()
-            ?.putString(selectedAppLanguageKey, languageCode)
+            ?.putString(ProfileScopedKey.of(selectedAppLanguageKey), languageCode)
+            ?.putString(lastSelectedAppLanguageKey, languageCode)
             ?.apply()
     }
 
@@ -75,7 +86,7 @@ actual object ThemeSettingsStorage {
     actual fun exportToSyncPayload(): JsonObject = buildJsonObject {
         loadSelectedTheme()?.let { put(selectedThemeKey, encodeSyncString(it)) }
         loadAmoledEnabled()?.let { put(amoledEnabledKey, encodeSyncBoolean(it)) }
-        loadSelectedAppLanguage()?.let { put(selectedAppLanguageKey, encodeSyncString(it)) }
+        loadProfileSelectedAppLanguage()?.let { put(selectedAppLanguageKey, encodeSyncString(it)) }
     }
 
     actual fun replaceFromSyncPayload(payload: JsonObject) {
@@ -86,7 +97,12 @@ actual object ThemeSettingsStorage {
 
         payload.decodeSyncString(selectedThemeKey)?.let(::saveSelectedTheme)
         payload.decodeSyncBoolean(amoledEnabledKey)?.let(::saveAmoledEnabled)
-        payload.decodeSyncString(selectedAppLanguageKey)?.let(::saveSelectedAppLanguage)
-        applySelectedAppLanguage(loadSelectedAppLanguage() ?: AppLanguage.ENGLISH.code)
+        payload.decodeSyncString(selectedAppLanguageKey)?.let { languageCode ->
+            saveSelectedAppLanguage(languageCode)
+            applySelectedAppLanguage(languageCode)
+        }
     }
+
+    private fun loadProfileSelectedAppLanguage(): String? =
+        preferences?.getString(ProfileScopedKey.of(selectedAppLanguageKey), null)
 }

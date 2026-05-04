@@ -17,12 +17,14 @@ import nuvio.composeapp.generated.resources.mdblist_logo
 import nuvio.composeapp.generated.resources.rating_tmdb
 import nuvio.composeapp.generated.resources.trakt_tv_favicon
 import org.jetbrains.compose.resources.painterResource
+import java.util.Locale
 
 internal actual object ThemeSettingsStorage {
     private const val preferencesName = "nuvio_theme_settings"
     private const val selectedThemeKey = "selected_theme"
     private const val amoledEnabledKey = "amoled_enabled"
     private const val selectedAppLanguageKey = "selected_app_language"
+    private const val lastSelectedAppLanguageKey = "last_selected_app_language"
     private val profileScopedSyncKeys = listOf(selectedThemeKey, amoledEnabledKey)
     private val globalSyncKeys = listOf(selectedAppLanguageKey)
 
@@ -41,23 +43,47 @@ internal actual object ThemeSettingsStorage {
     }
 
     actual fun loadSelectedAppLanguage(): String? {
-        val value = DesktopPreferences.getString(preferencesName, selectedAppLanguageKey)
-        if (value != null) return value
-        val legacy = DesktopPreferences.getString(preferencesName, ProfileScopedKey.of(selectedAppLanguageKey))
-        if (legacy != null) saveSelectedAppLanguage(legacy)
-        return legacy
+        val profileValue = loadProfileSelectedAppLanguage()
+        if (profileValue != null) return profileValue
+
+        val lastValue = DesktopPreferences.getString(preferencesName, lastSelectedAppLanguageKey)
+        if (lastValue != null) return lastValue
+
+        val legacyGlobal = DesktopPreferences.getString(preferencesName, selectedAppLanguageKey)
+        if (legacyGlobal != null) {
+            saveSelectedAppLanguage(legacyGlobal)
+            return legacyGlobal
+        }
+
+        return AppLanguageDefaults.systemLanguageCode()
     }
 
     actual fun saveSelectedAppLanguage(languageCode: String) {
-        DesktopPreferences.putString(preferencesName, selectedAppLanguageKey, languageCode)
+        DesktopPreferences.putString(preferencesName, ProfileScopedKey.of(selectedAppLanguageKey), languageCode)
+        DesktopPreferences.putString(preferencesName, lastSelectedAppLanguageKey, languageCode)
     }
 
-    actual fun applySelectedAppLanguage(languageCode: String) = Unit
+    actual fun applySelectedAppLanguage(languageCode: String) {
+        val normalizedCode = languageCode
+            .trim()
+            .takeIf { it.isNotBlank() }
+            ?: AppLanguage.ENGLISH.code
+        val locale = Locale.forLanguageTag(normalizedCode)
+        Locale.setDefault(locale)
+        Locale.setDefault(Locale.Category.DISPLAY, locale)
+        Locale.setDefault(Locale.Category.FORMAT, locale)
+        System.setProperty("user.language", locale.language)
+        if (locale.country.isNotBlank()) {
+            System.setProperty("user.country", locale.country)
+        } else {
+            System.clearProperty("user.country")
+        }
+    }
 
     actual fun exportToSyncPayload(): JsonObject = buildJsonObject {
         loadSelectedTheme()?.let { put(selectedThemeKey, encodeSyncString(it)) }
         loadAmoledEnabled()?.let { put(amoledEnabledKey, encodeSyncBoolean(it)) }
-        loadSelectedAppLanguage()?.let { put(selectedAppLanguageKey, encodeSyncString(it)) }
+        loadProfileSelectedAppLanguage()?.let { put(selectedAppLanguageKey, encodeSyncString(it)) }
     }
 
     actual fun replaceFromSyncPayload(payload: JsonObject) {
@@ -66,9 +92,14 @@ internal actual object ThemeSettingsStorage {
 
         payload.decodeSyncString(selectedThemeKey)?.let(::saveSelectedTheme)
         payload.decodeSyncBoolean(amoledEnabledKey)?.let(::saveAmoledEnabled)
-        payload.decodeSyncString(selectedAppLanguageKey)?.let(::saveSelectedAppLanguage)
-        applySelectedAppLanguage(loadSelectedAppLanguage() ?: AppLanguage.ENGLISH.code)
+        payload.decodeSyncString(selectedAppLanguageKey)?.let { languageCode ->
+            saveSelectedAppLanguage(languageCode)
+            applySelectedAppLanguage(languageCode)
+        }
     }
+
+    private fun loadProfileSelectedAppLanguage(): String? =
+        DesktopPreferences.getString(preferencesName, ProfileScopedKey.of(selectedAppLanguageKey))
 }
 
 internal actual fun LazyListScope.pluginsSettingsContent() = Unit
