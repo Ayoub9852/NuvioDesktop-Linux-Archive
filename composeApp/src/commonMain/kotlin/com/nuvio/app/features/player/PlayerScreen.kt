@@ -821,7 +821,7 @@ fun PlayerScreen(
         fun switchToSource(stream: StreamItem) {
             val url = stream.directPlaybackUrl ?: return
             if (url == activeSourceUrl) return
-            val currentPositionMs = playbackSnapshot.positionMs.coerceAtLeast(0L)
+            val resumeAtMs = (scrubbingPositionMs ?: playbackSnapshot.positionMs).coerceAtLeast(0L)
             flushWatchProgress()
             if (playerSettingsUiState.streamReuseLastLinkEnabled && activeVideoId != null) {
                 val cacheKey = StreamLinkCacheRepository.contentKey(
@@ -850,7 +850,7 @@ fun PlayerScreen(
             activeProviderName = stream.addonName
             activeProviderAddonId = stream.addonId
             currentStreamBingeGroup = stream.behaviorHints.bingeGroup
-            activeInitialPositionMs = currentPositionMs
+            activeInitialPositionMs = resumeAtMs
             activeInitialProgressFraction = null
             showSourcesPanel = false
             revealPlayerChrome()
@@ -1191,6 +1191,7 @@ fun PlayerScreen(
         }
 
         LaunchedEffect(
+            activeSourceUrl,
             playerController,
             playerControllerSourceUrl,
             playbackSnapshot.isLoading,
@@ -1220,6 +1221,12 @@ fun PlayerScreen(
             }
             if (targetPositionMs <= 0L) {
                 initialSeekApplied = true
+                return@LaunchedEffect
+            }
+
+            // Delay resume seek until media timeline is available; some backends
+            // ignore early seek commands fired before duration is known.
+            if (playbackSnapshot.durationMs <= 0L) {
                 return@LaunchedEffect
             }
 
