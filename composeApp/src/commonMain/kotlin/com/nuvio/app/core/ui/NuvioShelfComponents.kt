@@ -41,6 +41,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import kotlin.math.abs
+import kotlin.math.roundToInt
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.home_view_all
 import nuvio.composeapp.generated.resources.poster_logo_content_description
@@ -364,22 +365,27 @@ private data class CatalogLogoOverlaySize(
 private fun catalogLogoOverlaySize(
     basePosterWidthDp: Int,
     shape: NuvioPosterShape,
-): CatalogLogoOverlaySize =
-    if (shape == NuvioPosterShape.Landscape) {
-        when {
-            basePosterWidthDp <= 108 -> CatalogLogoOverlaySize(width = 92.dp, height = 24.dp, textMaxWidth = 120.dp)
-            basePosterWidthDp <= 120 -> CatalogLogoOverlaySize(width = 104.dp, height = 28.dp, textMaxWidth = 132.dp)
-            basePosterWidthDp <= 132 -> CatalogLogoOverlaySize(width = 116.dp, height = 30.dp, textMaxWidth = 144.dp)
-            else -> CatalogLogoOverlaySize(width = 128.dp, height = 34.dp, textMaxWidth = 156.dp)
-        }
+): CatalogLogoOverlaySize {
+    fun scaledDp(value: Float, min: Int, max: Int): Dp =
+        value.roundToInt().coerceIn(min, max).dp
+
+    return if (shape == NuvioPosterShape.Landscape) {
+        val landscapeWidth = landscapePosterWidth(basePosterWidthDp).value
+        val logoWidth = scaledDp(landscapeWidth * 0.42f, min = 92, max = 180)
+        CatalogLogoOverlaySize(
+            width = logoWidth,
+            height = scaledDp(logoWidth.value * 0.26f, min = 24, max = 46),
+            textMaxWidth = scaledDp(landscapeWidth * 0.55f, min = 120, max = 220),
+        )
     } else {
-        when {
-            basePosterWidthDp <= 108 -> CatalogLogoOverlaySize(width = 72.dp, height = 18.dp, textMaxWidth = 92.dp)
-            basePosterWidthDp <= 120 -> CatalogLogoOverlaySize(width = 80.dp, height = 20.dp, textMaxWidth = 104.dp)
-            basePosterWidthDp <= 132 -> CatalogLogoOverlaySize(width = 88.dp, height = 22.dp, textMaxWidth = 112.dp)
-            else -> CatalogLogoOverlaySize(width = 96.dp, height = 24.dp, textMaxWidth = 124.dp)
-        }
+        val logoWidth = scaledDp(basePosterWidthDp * 0.68f, min = 72, max = 140)
+        CatalogLogoOverlaySize(
+            width = logoWidth,
+            height = scaledDp(logoWidth.value * 0.25f, min = 18, max = 36),
+            textMaxWidth = scaledDp(basePosterWidthDp * 0.86f, min = 92, max = 170),
+        )
     }
+}
 
 private fun NuvioPosterShape.cardWidth(basePosterWidthDp: Int): Dp =
     when (this) {

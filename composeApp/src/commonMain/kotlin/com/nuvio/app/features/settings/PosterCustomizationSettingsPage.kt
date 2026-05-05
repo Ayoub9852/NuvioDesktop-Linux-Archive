@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FilterChip
@@ -31,6 +32,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.nuvio.app.core.ui.NuvioActionLabel
+import com.nuvio.app.core.ui.PosterCardWidthPreset
 import com.nuvio.app.core.ui.PosterCardStyleRepository
 import com.nuvio.app.core.ui.PosterCardStyleUiState
 import nuvio.composeapp.generated.resources.Res
@@ -78,11 +80,12 @@ internal fun LazyListScope.posterCustomizationSettingsContent(
             SettingsGroup(isTablet = isTablet) {
                 PosterCardStyleControls(
                     isTablet = isTablet,
+                    widthPreset = uiState.widthPreset,
                     widthDp = uiState.widthDp,
                     cornerRadiusDp = uiState.cornerRadiusDp,
                     catalogLandscapeModeEnabled = uiState.catalogLandscapeModeEnabled,
                     hideLabelsEnabled = uiState.hideLabelsEnabled,
-                    onWidthSelected = PosterCardStyleRepository::setWidthDp,
+                    onWidthSelected = PosterCardStyleRepository::setWidthPreset,
                     onCornerRadiusSelected = PosterCardStyleRepository::setCornerRadiusDp,
                     onCatalogLandscapeModeChange = PosterCardStyleRepository::setCatalogLandscapeModeEnabled,
                     onHideLabelsChange = PosterCardStyleRepository::setHideLabelsEnabled,
@@ -96,22 +99,23 @@ internal fun LazyListScope.posterCustomizationSettingsContent(
 @Composable
 private fun PosterCardStyleControls(
     isTablet: Boolean,
+    widthPreset: PosterCardWidthPreset,
     widthDp: Int,
     cornerRadiusDp: Int,
     catalogLandscapeModeEnabled: Boolean,
     hideLabelsEnabled: Boolean,
-    onWidthSelected: (Int) -> Unit,
+    onWidthSelected: (PosterCardWidthPreset) -> Unit,
     onCornerRadiusSelected: (Int) -> Unit,
     onCatalogLandscapeModeChange: (Boolean) -> Unit,
     onHideLabelsChange: (Boolean) -> Unit,
 ) {
     val widthOptions = listOf(
-        PresetOption(stringResource(Res.string.settings_poster_width_compact), 104),
-        PresetOption(stringResource(Res.string.settings_poster_width_dense), 112),
-        PresetOption(stringResource(Res.string.settings_poster_width_standard), 120),
-        PresetOption(stringResource(Res.string.settings_poster_width_balanced), 126),
-        PresetOption(stringResource(Res.string.settings_poster_width_comfort), 134),
-        PresetOption(stringResource(Res.string.settings_poster_width_large), 140),
+        PresetOption(stringResource(Res.string.settings_poster_width_compact), PosterCardWidthPreset.Compact),
+        PresetOption(stringResource(Res.string.settings_poster_width_dense), PosterCardWidthPreset.Dense),
+        PresetOption(stringResource(Res.string.settings_poster_width_standard), PosterCardWidthPreset.Standard),
+        PresetOption(stringResource(Res.string.settings_poster_width_balanced), PosterCardWidthPreset.Balanced),
+        PresetOption(stringResource(Res.string.settings_poster_width_comfort), PosterCardWidthPreset.Comfort),
+        PresetOption(stringResource(Res.string.settings_poster_width_large), PosterCardWidthPreset.Large),
     )
     val radiusOptions = listOf(
         PresetOption(stringResource(Res.string.settings_poster_radius_sharp), 0),
@@ -138,7 +142,7 @@ private fun PosterCardStyleControls(
         )
         PosterStyleOptionRow(
             title = stringResource(Res.string.settings_poster_card_width),
-            selectedValue = widthDp,
+            selectedValue = widthPreset,
             options = widthOptions,
             onSelected = onWidthSelected,
         )
@@ -208,8 +212,8 @@ private fun PosterCardLivePreview(
     cornerRadiusDp: Int,
 ) {
     val targetHeightDp = (widthDp * 3) / 2
-    val previewFrameWidthDp = 140
-    val previewFrameHeightDp = 210
+    val previewFrameWidthDp = maxOf(widthDp, 140)
+    val previewFrameHeightDp = maxOf(targetHeightDp, 210)
     val animatedWidth = animateDpAsState(
         targetValue = widthDp.dp,
         animationSpec = tween(durationMillis = 280),
@@ -238,7 +242,9 @@ private fun PosterCardLivePreview(
         )
 
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(max = 720.dp),
             horizontalArrangement = Arrangement.spacedBy(14.dp),
             verticalAlignment = Alignment.Top,
         ) {
@@ -293,11 +299,11 @@ private fun PosterCardLivePreview(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun PosterStyleOptionRow(
+private fun <T> PosterStyleOptionRow(
     title: String,
-    selectedValue: Int,
-    options: List<PresetOption>,
-    onSelected: (Int) -> Unit,
+    selectedValue: T,
+    options: List<PresetOption<T>>,
+    onSelected: (T) -> Unit,
 ) {
     val selectedLabel = options.firstOrNull { it.value == selectedValue }?.label
         ?: stringResource(Res.string.settings_poster_custom)
@@ -331,7 +337,7 @@ private fun PosterStyleOptionRow(
     }
 }
 
-private data class PresetOption(
+private data class PresetOption<T>(
     val label: String,
-    val value: Int,
+    val value: T,
 )
