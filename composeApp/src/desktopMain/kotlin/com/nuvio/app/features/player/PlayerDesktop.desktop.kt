@@ -900,7 +900,7 @@ internal actual object PlayerSettingsStorage {
 actual fun LockPlayerToLandscape() = Unit
 
 @Composable
-actual fun EnterImmersivePlayerMode() = Unit
+actual fun EnterImmersivePlayerMode(keepScreenAwake: Boolean) = Unit
 
 @Composable
 actual fun ManagePlayerPictureInPicture(
