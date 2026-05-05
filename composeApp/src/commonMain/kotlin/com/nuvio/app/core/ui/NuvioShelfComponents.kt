@@ -371,11 +371,11 @@ private fun catalogLogoOverlaySize(
 
     return if (shape == NuvioPosterShape.Landscape) {
         val landscapeWidth = landscapePosterWidth(basePosterWidthDp).value
-        val logoWidth = scaledDp(landscapeWidth * 0.42f, min = 92, max = 180)
+        val landscapeHeight = landscapeWidth / PosterLandscapeAspectRatio
         CatalogLogoOverlaySize(
-            width = logoWidth,
-            height = scaledDp(logoWidth.value * 0.26f, min = 24, max = 46),
-            textMaxWidth = scaledDp(landscapeWidth * 0.55f, min = 120, max = 220),
+            width = scaledDp(landscapeWidth * 0.58f, min = 112, max = 300),
+            height = scaledDp(landscapeHeight * 0.46f, min = 42, max = 110),
+            textMaxWidth = scaledDp(landscapeWidth * 0.72f, min = 140, max = 340),
         )
     } else {
         val logoWidth = scaledDp(basePosterWidthDp * 0.68f, min = 72, max = 140)
