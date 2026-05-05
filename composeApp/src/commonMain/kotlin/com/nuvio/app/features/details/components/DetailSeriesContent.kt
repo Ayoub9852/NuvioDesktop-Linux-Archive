@@ -58,6 +58,7 @@ import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.format.formatReleaseDateForDisplay
+import com.nuvio.app.core.ui.desktopContextMenuPointer
 import com.nuvio.app.core.i18n.localizedSeasonEpisodeCode
 import com.nuvio.app.core.ui.NuvioAnimatedWatchedBadge
 import com.nuvio.app.core.ui.NuvioProgressBar
@@ -639,7 +640,8 @@ private fun EpisodeHorizontalCard(
                 enabled = onClick != null || onLongPress != null,
                 onClick = { onClick?.invoke() },
                 onLongClick = onLongPress,
-            ),
+            )
+            .desktopContextMenuPointer(onLongPress),
     ) {
         val imageUrl = video.thumbnail ?: fallbackImage
         if (imageUrl != null) {
@@ -910,7 +912,8 @@ private fun EpisodeListCard(
                 enabled = onClick != null || onLongPress != null,
                 onClick = { onClick?.invoke() },
                 onLongClick = onLongPress,
-            ),
+            )
+            .desktopContextMenuPointer(onLongPress),
     ) {
         Row(
             modifier = Modifier.fillMaxSize(),

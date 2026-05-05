@@ -392,12 +392,15 @@ private fun NuvioPosterShape.cardWidth(basePosterWidthDp: Int): Dp =
 internal fun Modifier.posterCardClickable(
     onClick: (() -> Unit)?,
     onLongClick: (() -> Unit)?,
-): Modifier =
-    if (onClick != null || onLongClick != null) {
-        combinedClickable(
-            onClick = { onClick?.invoke() },
-            onLongClick = onLongClick,
-        )
-    } else {
-        this
-    }
+): Modifier {
+    val withPrimaryGestures =
+        if (onClick != null || onLongClick != null) {
+            this.combinedClickable(
+                onClick = { onClick?.invoke() },
+                onLongClick = onLongClick,
+            )
+        } else {
+            this
+        }
+    return withPrimaryGestures.desktopContextMenuPointer(onLongClick)
+}

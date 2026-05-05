@@ -64,6 +64,7 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
+import com.nuvio.app.core.ui.desktopContextMenuPointer
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import nuvio.composeapp.generated.resources.*
@@ -140,6 +141,17 @@ fun ProfileSwitcherTab(
 
     Box(
         modifier = modifier
+            .desktopContextMenuPointer(
+                onContextMenu =
+                    if (profiles.isNotEmpty()) {
+                        {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            showPopup = true
+                        }
+                    } else {
+                        null
+                    },
+            )
             .pointerInput(profiles) {
                 detectTapGestures(
                     onTap = { onClick() },
