@@ -130,6 +130,7 @@ fun StreamsScreen(
     val clipboardManager = LocalClipboardManager.current
     val streamLinkCopiedText = stringResource(Res.string.streams_link_copied)
     val noDirectStreamLinkText = stringResource(Res.string.streams_no_direct_link)
+    val torrentUnsupportedText = stringResource(Res.string.streams_torrent_not_supported)
     var streamActionsTarget by remember(videoId) { mutableStateOf<StreamItem?>(null) }
     var preferredFilterApplied by remember(videoId) { mutableStateOf(false) }
     val storedProgress = if (startFromBeginning) {
@@ -206,7 +207,13 @@ fun StreamsScreen(
                 uiState = uiState,
                 resumePositionMs = effectiveResumePositionMs,
                 resumeProgressFraction = effectiveResumeProgressFraction,
-                onStreamSelected = onStreamSelected,
+                onStreamSelected = { stream, positionMs, progressFraction ->
+                    if (stream.isTorrentStream) {
+                        NuvioToastController.show(torrentUnsupportedText)
+                    } else {
+                        onStreamSelected(stream, positionMs, progressFraction)
+                    }
+                },
                 onStreamLongPress = { stream -> streamActionsTarget = stream },
             )
         } else {
@@ -221,7 +228,13 @@ fun StreamsScreen(
                 uiState = uiState,
                 resumePositionMs = effectiveResumePositionMs,
                 resumeProgressFraction = effectiveResumeProgressFraction,
-                onStreamSelected = onStreamSelected,
+                onStreamSelected = { stream, positionMs, progressFraction ->
+                    if (stream.isTorrentStream) {
+                        NuvioToastController.show(torrentUnsupportedText)
+                    } else {
+                        onStreamSelected(stream, positionMs, progressFraction)
+                    }
+                },
                 onStreamLongPress = { stream -> streamActionsTarget = stream },
             )
         }
@@ -831,7 +844,7 @@ private fun LazyListScope.streamSection(
             StreamCard(
                 stream = stream,
                 onClick = {
-                    if (stream.directPlaybackUrl != null) {
+                    if (stream.directPlaybackUrl != null || stream.isTorrentStream) {
                         onStreamSelected(stream, resumePositionMs, resumeProgressFraction)
                     }
                 },
@@ -937,7 +950,7 @@ private fun StreamCard(
     onLongClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
-    val isEnabled = stream.directPlaybackUrl != null
+    val isEnabled = stream.directPlaybackUrl != null || stream.isTorrentStream
     val cardShape = RoundedCornerShape(12.dp)
     Row(
         modifier = modifier
