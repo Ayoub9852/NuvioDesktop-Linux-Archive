@@ -35,6 +35,7 @@ import com.nuvio.app.core.ui.NuvioActionLabel
 import com.nuvio.app.core.ui.PosterCardWidthPreset
 import com.nuvio.app.core.ui.PosterCardStyleRepository
 import com.nuvio.app.core.ui.PosterCardStyleUiState
+import com.nuvio.app.core.ui.resolvedPosterWidthDp
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.action_reset
 import nuvio.composeapp.generated.resources.settings_poster_card_radius
@@ -212,8 +213,12 @@ private fun PosterCardLivePreview(
     cornerRadiusDp: Int,
 ) {
     val targetHeightDp = (widthDp * 3) / 2
-    val previewFrameWidthDp = maxOf(widthDp, 140)
-    val previewFrameHeightDp = maxOf(targetHeightDp, 210)
+    val maxPreviewWidthDp = PosterCardWidthPreset.entries.maxOf { preset ->
+        resolvedPosterWidthDp(preset)
+    }
+    val maxPreviewHeightDp = (maxPreviewWidthDp * 3) / 2
+    val previewFrameWidthDp = maxPreviewWidthDp
+    val previewFrameHeightDp = maxPreviewHeightDp
     val animatedWidth = animateDpAsState(
         targetValue = widthDp.dp,
         animationSpec = tween(durationMillis = 280),
