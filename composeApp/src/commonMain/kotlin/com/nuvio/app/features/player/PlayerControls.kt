@@ -138,6 +138,7 @@ internal fun PlayerControlsShell(
                 isLocked = isLocked,
                 isFullscreenSupported = isFullscreenSupported,
                 isFullscreen = isFullscreen,
+                onSubmitIntroClick = onSubmitIntroClick,
                 onLockToggle = onLockToggle,
                 onFullscreenClick = onFullscreenClick,
                 onBack = onBack,
@@ -176,7 +177,6 @@ internal fun PlayerControlsShell(
                 onAudioClick = onAudioClick,
                 onSourcesClick = onSourcesClick,
                 onEpisodesClick = onEpisodesClick,
-                onSubmitIntroClick = onSubmitIntroClick,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
@@ -199,6 +199,7 @@ private fun PlayerHeader(
     isLocked: Boolean,
     isFullscreenSupported: Boolean,
     isFullscreen: Boolean,
+    onSubmitIntroClick: (() -> Unit)?,
     onLockToggle: () -> Unit,
     onFullscreenClick: () -> Unit,
     onBack: () -> Unit,
@@ -286,6 +287,15 @@ private fun PlayerHeader(
                         buttonSize = metrics.headerIconSize + 16.dp,
                         iconSize = metrics.headerIconSize,
                         onClick = onFullscreenClick,
+                    )
+                }
+                if (onSubmitIntroClick != null) {
+                    PlayerHeaderIconButton(
+                        icon = Icons.Rounded.Flag,
+                        contentDescription = "Submit Intro",
+                        buttonSize = metrics.headerIconSize + 16.dp,
+                        iconSize = metrics.headerIconSize,
+                        onClick = onSubmitIntroClick,
                     )
                 }
                 PlayerHeaderIconButton(
@@ -448,7 +458,6 @@ private fun ProgressControls(
     onAudioClick: () -> Unit,
     onSourcesClick: (() -> Unit)? = null,
     onEpisodesClick: (() -> Unit)? = null,
-    onSubmitIntroClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val durationMs = playbackSnapshot.durationMs.coerceAtLeast(1L)
@@ -528,13 +537,6 @@ private fun ProgressControls(
                             label = stringResource(Res.string.compose_player_episodes),
                             icon = Icons.Rounded.VideoLibrary,
                             onClick = onEpisodesClick,
-                        )
-                    }
-                    if (onSubmitIntroClick != null) {
-                        PlayerActionPillButton(
-                            label = "Submit Intro",
-                            icon = Icons.Rounded.Flag,
-                            onClick = onSubmitIntroClick,
                         )
                     }
                 }
@@ -700,6 +702,9 @@ private fun PlayerActionPillButton(
             text = label,
             style = MaterialTheme.nuvioTypeScale.labelSm,
             color = Color.White,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            softWrap = false,
         )
     }
 }
