@@ -1,6 +1,8 @@
 package com.nuvio.app.features.home.components
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -12,11 +14,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import coil3.compose.AsyncImage
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.engine.java.Java
 import io.ktor.client.request.get
+import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
 import java.awt.AlphaComposite
 import java.awt.Graphics2D
@@ -25,21 +29,41 @@ import java.awt.image.BufferedImage
 import java.io.ByteArrayInputStream
 import javax.imageio.ImageIO
 import javax.imageio.metadata.IIOMetadataNode
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlin.math.max
 
 private const val DefaultGifDelayCentiseconds = 10
-private const val MaxDecodedGifEntries = 4
-private const val MaxDecodedGifBytesTotal = 32 * 1024 * 1024
-private const val MaxDecodedDimension = 480
+private const val DecodeSizeBucketPx = 32
+private const val FallbackDecodeDimensionPx = 360
+private const val MaxDecodedDimension = 768
+private const val MaxDecodedGifEntries = 3
+private const val MaxGifSourceBytes = 16L * 1024 * 1024
+private const val MaxDecodedGifBytes = 64L * 1024 * 1024
+private const val MaxDecodedGifBytesTotal = 128L * 1024 * 1024
+private const val MaxLogicalGifPixels = 4096L * 4096L
+
+private data class DesktopGifCacheKey(
+    val url: String,
+    val widthPx: Int,
+    val heightPx: Int,
+)
+
+private data class GifDecodeTarget(
+    val widthPx: Int,
+    val heightPx: Int,
+)
 
 private data class DecodedDesktopGif(
     val frames: List<ImageBitmap>,
     val delaysMs: IntArray,
-    val approxBytes: Int,
+    val approxBytes: Long,
 )
 
 private data class GifFrameMeta(
@@ -52,22 +76,54 @@ private data class GifFrameMeta(
 )
 
 private object DesktopDecodedGifCache {
-    private var totalBytes: Int = 0
-    private val map = LinkedHashMap<String, DecodedDesktopGif>(16, 0.75f, true)
+    private var totalBytes: Long = 0
+    private val map = LinkedHashMap<DesktopGifCacheKey, DecodedDesktopGif>(16, 0.75f, true)
 
     @Synchronized
-    fun get(url: String): DecodedDesktopGif? = map[url]
+    fun get(key: DesktopGifCacheKey): DecodedDesktopGif? = map[key]
 
     @Synchronized
-    fun put(url: String, gif: DecodedDesktopGif) {
-        map.remove(url)?.let { totalBytes -= it.approxBytes }
-        map[url] = gif
+    fun put(key: DesktopGifCacheKey, gif: DecodedDesktopGif) {
+        if (gif.approxBytes > MaxDecodedGifBytes) return
+        map.remove(key)?.let { totalBytes -= it.approxBytes }
+        map[key] = gif
         totalBytes += gif.approxBytes
         while ((map.size > MaxDecodedGifEntries || totalBytes > MaxDecodedGifBytesTotal) && map.isNotEmpty()) {
             val eldest = map.entries.first()
             map.remove(eldest.key)
             totalBytes -= eldest.value.approxBytes
         }
+    }
+}
+
+private object DesktopGifInFlight {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val requests = mutableMapOf<DesktopGifCacheKey, Deferred<DecodedDesktopGif?>>()
+
+    suspend fun getOrDecode(
+        key: DesktopGifCacheKey,
+        decode: suspend () -> DecodedDesktopGif?,
+    ): DecodedDesktopGif? {
+        DesktopDecodedGifCache.get(key)?.let { return it }
+
+        val request = synchronized(requests) {
+            requests[key] ?: scope.async {
+                DesktopDecodedGifCache.get(key) ?: decode()?.also { decoded ->
+                    DesktopDecodedGifCache.put(key, decoded)
+                }
+            }.also { deferred ->
+                requests[key] = deferred
+                deferred.invokeOnCompletion {
+                    synchronized(requests) {
+                        if (requests[key] === deferred) {
+                            requests.remove(key)
+                        }
+                    }
+                }
+            }
+        }
+
+        return request.await()
     }
 }
 
@@ -97,47 +153,69 @@ internal actual fun CollectionCardRemoteImage(
         return
     }
 
-    var state by remember(imageUrl) { mutableStateOf<DesktopGifState>(DesktopGifState.Loading) }
-
-    LaunchedEffect(imageUrl) {
-        state = DesktopGifState.Loading
-        DesktopDecodedGifCache.get(imageUrl)?.let {
-            state = DesktopGifState.Ready(it)
-            return@LaunchedEffect
+    BoxWithConstraints(modifier = modifier) {
+        val density = LocalDensity.current
+        val targetWidthPx = maxWidth.value
+            .takeIf { it.isFinite() && it > 0f }
+            ?.let { with(density) { maxWidth.roundToPx() } }
+            ?: FallbackDecodeDimensionPx
+        val targetHeightPx = maxHeight.value
+            .takeIf { it.isFinite() && it > 0f }
+            ?.let { with(density) { maxHeight.roundToPx() } }
+            ?: FallbackDecodeDimensionPx
+        val decodeTarget = remember(targetWidthPx, targetHeightPx) {
+            GifDecodeTarget(
+                widthPx = targetWidthPx.roundUpToDecodeBucket().coerceIn(1, MaxDecodedDimension),
+                heightPx = targetHeightPx.roundUpToDecodeBucket().coerceIn(1, MaxDecodedDimension),
+            )
+        }
+        val cacheKey = remember(imageUrl, decodeTarget) {
+            DesktopGifCacheKey(
+                url = imageUrl,
+                widthPx = decodeTarget.widthPx,
+                heightPx = decodeTarget.heightPx,
+            )
+        }
+        var state by remember(cacheKey) {
+            mutableStateOf<DesktopGifState>(
+                DesktopDecodedGifCache.get(cacheKey)?.let(DesktopGifState::Ready) ?: DesktopGifState.Loading,
+            )
         }
 
-        val decoded = withContext(Dispatchers.IO) {
-            runCatching {
-                val response = desktopGifHttpClient.get(imageUrl)
-                if (!response.status.isSuccess()) return@runCatching null
-                val bytes = response.body<ByteArray>()
-                decodeGifForCompose(bytes)
-            }.getOrNull()
+        LaunchedEffect(cacheKey) {
+            state = DesktopGifState.Loading
+            DesktopDecodedGifCache.get(cacheKey)?.let {
+                state = DesktopGifState.Ready(it)
+                return@LaunchedEffect
+            }
+
+            val decoded = DesktopGifInFlight.getOrDecode(cacheKey) {
+                downloadAndDecodeGif(imageUrl, decodeTarget)
+            }
+
+            state = if (decoded != null) {
+                DesktopGifState.Ready(decoded)
+            } else {
+                DesktopGifState.UseStaticCoil
+            }
         }
 
-        if (decoded != null) {
-            DesktopDecodedGifCache.put(imageUrl, decoded)
-            state = DesktopGifState.Ready(decoded)
-        } else {
-            state = DesktopGifState.UseStaticCoil
+        when (val s = state) {
+            is DesktopGifState.Ready -> AnimatedComposeGif(
+                gif = s.gif,
+                contentDescription = contentDescription,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = contentScale,
+            )
+            is DesktopGifState.Loading,
+            is DesktopGifState.UseStaticCoil,
+            -> AsyncImage(
+                model = imageUrl,
+                contentDescription = contentDescription,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = contentScale,
+            )
         }
-    }
-
-    when (val s = state) {
-        is DesktopGifState.Ready -> AnimatedComposeGif(
-            gif = s.gif,
-            contentDescription = contentDescription,
-            modifier = modifier,
-            contentScale = contentScale,
-        )
-        is DesktopGifState.Loading,
-        is DesktopGifState.UseStaticCoil,
-        -> AsyncImage(
-            model = imageUrl,
-            contentDescription = contentDescription,
-            modifier = modifier,
-            contentScale = contentScale,
-        )
     }
 }
 
@@ -153,10 +231,18 @@ private fun AnimatedComposeGif(
 
     LaunchedEffect(gif) {
         if (gif.frames.size <= 1) return@LaunchedEffect
+        var nextFrameAtNanos = System.nanoTime()
         while (isActive) {
             val delayMs = gif.delaysMs.getOrElse(frameIndex) { DefaultGifDelayCentiseconds * 10 }.coerceAtLeast(10)
-            delay(delayMs.toLong())
+            nextFrameAtNanos += delayMs * 1_000_000L
+            val waitNanos = nextFrameAtNanos - System.nanoTime()
+            if (waitNanos > 0L) {
+                delay(max(1L, waitNanos / 1_000_000L))
+            }
             frameIndex = (frameIndex + 1) % gif.frames.size
+            if (System.nanoTime() - nextFrameAtNanos > 250_000_000L) {
+                nextFrameAtNanos = System.nanoTime()
+            }
         }
     }
 
@@ -168,7 +254,25 @@ private fun AnimatedComposeGif(
     )
 }
 
-private fun decodeGifForCompose(bytes: ByteArray): DecodedDesktopGif? {
+private suspend fun downloadAndDecodeGif(
+    imageUrl: String,
+    target: GifDecodeTarget,
+): DecodedDesktopGif? = withContext(Dispatchers.IO) {
+    runCatching {
+        val response = desktopGifHttpClient.get(imageUrl)
+        if (!response.status.isSuccess()) return@runCatching null
+        val contentLength = response.headers[HttpHeaders.ContentLength]?.toLongOrNull()
+        if (contentLength != null && contentLength > MaxGifSourceBytes) return@runCatching null
+        val bytes = response.body<ByteArray>()
+        if (bytes.size.toLong() > MaxGifSourceBytes) return@runCatching null
+        decodeGifForCompose(bytes, target)
+    }.getOrNull()
+}
+
+private fun decodeGifForCompose(
+    bytes: ByteArray,
+    target: GifDecodeTarget,
+): DecodedDesktopGif? {
     if (!bytes.isGifHeader()) return null
     val imageInputStream = ImageIO.createImageInputStream(ByteArrayInputStream(bytes)) ?: return null
     imageInputStream.use { input ->
@@ -190,10 +294,18 @@ private fun decodeGifForCompose(bytes: ByteArray): DecodedDesktopGif? {
             val baseW = logicalWidth ?: firstImage.width
             val baseH = logicalHeight ?: firstImage.height
             if (baseW <= 0 || baseH <= 0) return null
+            if (baseW.toLong() * baseH.toLong() > MaxLogicalGifPixels) return null
 
-            val scale = minOf(1.0, MaxDecodedDimension.toDouble() / max(baseW, baseH).toDouble())
+            val coverScale = max(
+                target.widthPx.toDouble() / baseW.toDouble(),
+                target.heightPx.toDouble() / baseH.toDouble(),
+            )
+            val dimensionCapScale = MaxDecodedDimension.toDouble() / max(baseW, baseH).toDouble()
+            val scale = minOf(1.0, coverScale, dimensionCapScale)
             val canvasW = max(1, (baseW * scale).toInt())
             val canvasH = max(1, (baseH * scale).toInt())
+            val approxBytes = frameCount.toLong() * canvasW.toLong() * canvasH.toLong() * 4L
+            if (approxBytes > MaxDecodedGifBytes) return null
 
             val canvas = BufferedImage(canvasW, canvasH, BufferedImage.TYPE_INT_ARGB)
             val previousCanvas = BufferedImage(canvasW, canvasH, BufferedImage.TYPE_INT_ARGB)
@@ -261,7 +373,6 @@ private fun decodeGifForCompose(bytes: ByteArray): DecodedDesktopGif? {
             }
 
             if (outFrames.isEmpty()) return null
-            val approxBytes = outFrames.size * canvasW * canvasH * 4
             return DecodedDesktopGif(
                 frames = outFrames,
                 delaysMs = outDelays,
@@ -271,6 +382,12 @@ private fun decodeGifForCompose(bytes: ByteArray): DecodedDesktopGif? {
             reader.dispose()
         }
     }
+}
+
+private fun Int.roundUpToDecodeBucket(): Int {
+    if (this <= 0) return FallbackDecodeDimensionPx
+    return (((this + DecodeSizeBucketPx - 1) / DecodeSizeBucketPx) * DecodeSizeBucketPx)
+        .coerceAtLeast(DecodeSizeBucketPx)
 }
 
 private fun parseFrameMetadata(root: IIOMetadataNode): GifFrameMeta {
