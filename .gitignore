@@ -33,6 +33,7 @@ backup/
 -tree -d experiment3 mediamp
 .agents
 .claude
+.codex/
 .junie
 .vscode
 skills-lock.json
@@ -44,3 +45,4 @@ composeApp/src/windowsPackageResources/
 composeApp/scripts/package-release-inno.ps1
 .env
 composeApp/runtime-config/release.properties
+Nuvio-*-x64-portable.zip
