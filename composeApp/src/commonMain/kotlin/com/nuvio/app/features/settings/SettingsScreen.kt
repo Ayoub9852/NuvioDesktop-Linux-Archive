@@ -38,9 +38,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.max
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nuvio.app.core.ui.AppTheme
+import com.nuvio.app.core.ui.LocalNuvioBottomNavigationOverlayPadding
 import com.nuvio.app.core.ui.NuvioScreen
 import com.nuvio.app.core.ui.NuvioScreenHeader
 import com.nuvio.app.core.ui.PlatformBackHandler
+import com.nuvio.app.core.ui.isLiquidGlassNativeTabBarSupported
 import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.details.MetaScreenSettingsRepository
 import com.nuvio.app.features.details.MetaScreenSettingsUiState
@@ -94,6 +96,10 @@ fun SettingsScreen(
             ThemeSettingsRepository.selectedTheme
         }.collectAsStateWithLifecycle()
         val amoledEnabled by remember { ThemeSettingsRepository.amoledEnabled }.collectAsStateWithLifecycle()
+        val liquidGlassNativeTabBarEnabled by remember {
+            ThemeSettingsRepository.liquidGlassNativeTabBarEnabled
+        }.collectAsStateWithLifecycle()
+        val liquidGlassNativeTabBarSupported = remember { isLiquidGlassNativeTabBarSupported() }
         val selectedAppLanguage by remember { ThemeSettingsRepository.selectedAppLanguage }.collectAsStateWithLifecycle()
         val tmdbSettings by remember {
             TmdbSettingsRepository.ensureLoaded()
@@ -135,6 +141,7 @@ fun SettingsScreen(
             }
         }
         val homescreenSettingsUiState by remember {
+            HomeCatalogSettingsRepository.snapshot()
             HomeCatalogSettingsRepository.uiState
         }.collectAsStateWithLifecycle()
         val metaScreenSettingsUiState by remember {
@@ -190,6 +197,9 @@ fun SettingsScreen(
                 onThemeSelected = ThemeSettingsRepository::setTheme,
                 amoledEnabled = amoledEnabled,
                 onAmoledToggle = ThemeSettingsRepository::setAmoled,
+                liquidGlassNativeTabBarSupported = liquidGlassNativeTabBarSupported,
+                liquidGlassNativeTabBarEnabled = liquidGlassNativeTabBarEnabled,
+                onLiquidGlassNativeTabBarToggle = ThemeSettingsRepository::setLiquidGlassNativeTabBar,
                 selectedAppLanguage = selectedAppLanguage,
                 onAppLanguageSelected = ThemeSettingsRepository::setAppLanguage,
                 episodeReleaseNotificationsUiState = episodeReleaseNotificationsUiState,
@@ -199,6 +209,7 @@ fun SettingsScreen(
                 traktCommentsEnabled = traktCommentsEnabled,
                 traktSettingsUiState = traktSettingsUiState,
                 homescreenHeroEnabled = homescreenSettingsUiState.heroEnabled,
+                homescreenHideUnreleasedContent = homescreenSettingsUiState.hideUnreleasedContent,
                 homescreenItems = homescreenSettingsUiState.items,
                 metaScreenSettingsUiState = metaScreenSettingsUiState,
                 continueWatchingPreferencesUiState = continueWatchingPreferencesUiState,
@@ -231,6 +242,9 @@ fun SettingsScreen(
                 onThemeSelected = ThemeSettingsRepository::setTheme,
                 amoledEnabled = amoledEnabled,
                 onAmoledToggle = ThemeSettingsRepository::setAmoled,
+                liquidGlassNativeTabBarSupported = liquidGlassNativeTabBarSupported,
+                liquidGlassNativeTabBarEnabled = liquidGlassNativeTabBarEnabled,
+                onLiquidGlassNativeTabBarToggle = ThemeSettingsRepository::setLiquidGlassNativeTabBar,
                 selectedAppLanguage = selectedAppLanguage,
                 onAppLanguageSelected = ThemeSettingsRepository::setAppLanguage,
                 episodeReleaseNotificationsUiState = episodeReleaseNotificationsUiState,
@@ -240,6 +254,7 @@ fun SettingsScreen(
                 traktCommentsEnabled = traktCommentsEnabled,
                 traktSettingsUiState = traktSettingsUiState,
                 homescreenHeroEnabled = homescreenSettingsUiState.heroEnabled,
+                homescreenHideUnreleasedContent = homescreenSettingsUiState.hideUnreleasedContent,
                 homescreenItems = homescreenSettingsUiState.items,
                 metaScreenSettingsUiState = metaScreenSettingsUiState,
                 continueWatchingPreferencesUiState = continueWatchingPreferencesUiState,
@@ -282,6 +297,9 @@ private fun MobileSettingsScreen(
     onThemeSelected: (AppTheme) -> Unit,
     amoledEnabled: Boolean,
     onAmoledToggle: (Boolean) -> Unit,
+    liquidGlassNativeTabBarSupported: Boolean,
+    liquidGlassNativeTabBarEnabled: Boolean,
+    onLiquidGlassNativeTabBarToggle: (Boolean) -> Unit,
     selectedAppLanguage: AppLanguage,
     onAppLanguageSelected: (AppLanguage) -> Unit,
     episodeReleaseNotificationsUiState: EpisodeReleaseNotificationsUiState,
@@ -291,6 +309,7 @@ private fun MobileSettingsScreen(
     traktCommentsEnabled: Boolean,
     traktSettingsUiState: TraktSettingsUiState,
     homescreenHeroEnabled: Boolean,
+    homescreenHideUnreleasedContent: Boolean,
     homescreenItems: List<HomeCatalogSettingsItem>,
     metaScreenSettingsUiState: MetaScreenSettingsUiState,
     continueWatchingPreferencesUiState: ContinueWatchingPreferencesUiState,
@@ -362,6 +381,9 @@ private fun MobileSettingsScreen(
                     onThemeSelected = onThemeSelected,
                     amoledEnabled = amoledEnabled,
                     onAmoledToggle = onAmoledToggle,
+                    liquidGlassNativeTabBarSupported = liquidGlassNativeTabBarSupported,
+                    liquidGlassNativeTabBarEnabled = liquidGlassNativeTabBarEnabled,
+                    onLiquidGlassNativeTabBarToggle = onLiquidGlassNativeTabBarToggle,
                     selectedAppLanguage = selectedAppLanguage,
                     onAppLanguageSelected = onAppLanguageSelected,
                     onContinueWatchingClick = onContinueWatchingClick,
@@ -376,6 +398,9 @@ private fun MobileSettingsScreen(
                     isVisible = continueWatchingPreferencesUiState.isVisible,
                     style = continueWatchingPreferencesUiState.style,
                     upNextFromFurthestEpisode = continueWatchingPreferencesUiState.upNextFromFurthestEpisode,
+                    useEpisodeThumbnails = continueWatchingPreferencesUiState.useEpisodeThumbnails,
+                    showUnairedNextUp = continueWatchingPreferencesUiState.showUnairedNextUp,
+                    blurNextUp = continueWatchingPreferencesUiState.blurNextUp,
                     showResumePromptOnLaunch = continueWatchingPreferencesUiState.showResumePromptOnLaunch,
                 )
                 SettingsPage.PosterCustomization -> posterCustomizationSettingsContent(
@@ -396,6 +421,7 @@ private fun MobileSettingsScreen(
                 SettingsPage.Homescreen -> homescreenSettingsContent(
                     isTablet = false,
                     heroEnabled = homescreenHeroEnabled,
+                    hideUnreleasedContent = homescreenHideUnreleasedContent,
                     items = homescreenItems,
                 )
                 SettingsPage.MetaScreen -> metaScreenSettingsContent(
@@ -449,6 +475,9 @@ private fun TabletSettingsScreen(
     onThemeSelected: (AppTheme) -> Unit,
     amoledEnabled: Boolean,
     onAmoledToggle: (Boolean) -> Unit,
+    liquidGlassNativeTabBarSupported: Boolean,
+    liquidGlassNativeTabBarEnabled: Boolean,
+    onLiquidGlassNativeTabBarToggle: (Boolean) -> Unit,
     selectedAppLanguage: AppLanguage,
     onAppLanguageSelected: (AppLanguage) -> Unit,
     episodeReleaseNotificationsUiState: EpisodeReleaseNotificationsUiState,
@@ -458,6 +487,7 @@ private fun TabletSettingsScreen(
     traktCommentsEnabled: Boolean,
     traktSettingsUiState: TraktSettingsUiState,
     homescreenHeroEnabled: Boolean,
+    homescreenHideUnreleasedContent: Boolean,
     homescreenItems: List<HomeCatalogSettingsItem>,
     metaScreenSettingsUiState: MetaScreenSettingsUiState,
     continueWatchingPreferencesUiState: ContinueWatchingPreferencesUiState,
@@ -530,6 +560,7 @@ private fun TabletSettingsScreen(
 
         saveableStateHolder.SaveableStateProvider(page.name) {
             val listState = rememberLazyListState()
+            val bottomOverlayPadding = LocalNuvioBottomNavigationOverlayPadding.current
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
@@ -537,7 +568,7 @@ private fun TabletSettingsScreen(
                     start = 40.dp,
                     top = topOffset,
                     end = 40.dp,
-                    bottom = 40.dp,
+                    bottom = 40.dp + bottomOverlayPadding,
                 ),
                 verticalArrangement = Arrangement.spacedBy(18.dp),
             ) {
@@ -600,6 +631,9 @@ private fun TabletSettingsScreen(
                         onThemeSelected = onThemeSelected,
                         amoledEnabled = amoledEnabled,
                         onAmoledToggle = onAmoledToggle,
+                        liquidGlassNativeTabBarSupported = liquidGlassNativeTabBarSupported,
+                        liquidGlassNativeTabBarEnabled = liquidGlassNativeTabBarEnabled,
+                        onLiquidGlassNativeTabBarToggle = onLiquidGlassNativeTabBarToggle,
                         selectedAppLanguage = selectedAppLanguage,
                         onAppLanguageSelected = onAppLanguageSelected,
                         onContinueWatchingClick = { openInlinePage(SettingsPage.ContinueWatching) },
@@ -614,6 +648,9 @@ private fun TabletSettingsScreen(
                         isVisible = continueWatchingPreferencesUiState.isVisible,
                         style = continueWatchingPreferencesUiState.style,
                         upNextFromFurthestEpisode = continueWatchingPreferencesUiState.upNextFromFurthestEpisode,
+                        useEpisodeThumbnails = continueWatchingPreferencesUiState.useEpisodeThumbnails,
+                        showUnairedNextUp = continueWatchingPreferencesUiState.showUnairedNextUp,
+                        blurNextUp = continueWatchingPreferencesUiState.blurNextUp,
                         showResumePromptOnLaunch = continueWatchingPreferencesUiState.showResumePromptOnLaunch,
                     )
                     SettingsPage.PosterCustomization -> posterCustomizationSettingsContent(
@@ -634,6 +671,7 @@ private fun TabletSettingsScreen(
                     SettingsPage.Homescreen -> homescreenSettingsContent(
                         isTablet = true,
                         heroEnabled = homescreenHeroEnabled,
+                        hideUnreleasedContent = homescreenHideUnreleasedContent,
                         items = homescreenItems,
                     )
                     SettingsPage.MetaScreen -> metaScreenSettingsContent(

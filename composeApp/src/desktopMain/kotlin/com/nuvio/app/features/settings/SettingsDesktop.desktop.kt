@@ -23,9 +23,14 @@ internal actual object ThemeSettingsStorage {
     private const val preferencesName = "nuvio_theme_settings"
     private const val selectedThemeKey = "selected_theme"
     private const val amoledEnabledKey = "amoled_enabled"
+    private const val liquidGlassNativeTabBarEnabledKey = "liquid_glass_native_tab_bar_enabled"
     private const val selectedAppLanguageKey = "selected_app_language"
     private const val lastSelectedAppLanguageKey = "last_selected_app_language"
-    private val profileScopedSyncKeys = listOf(selectedThemeKey, amoledEnabledKey)
+    private val profileScopedSyncKeys = listOf(
+        selectedThemeKey,
+        amoledEnabledKey,
+        liquidGlassNativeTabBarEnabledKey,
+    )
     private val globalSyncKeys = listOf(selectedAppLanguageKey)
 
     actual fun loadSelectedTheme(): String? =
@@ -40,6 +45,13 @@ internal actual object ThemeSettingsStorage {
 
     actual fun saveAmoledEnabled(enabled: Boolean) {
         DesktopPreferences.putBoolean(preferencesName, ProfileScopedKey.of(amoledEnabledKey), enabled)
+    }
+
+    actual fun loadLiquidGlassNativeTabBarEnabled(): Boolean? =
+        DesktopPreferences.getBoolean(preferencesName, ProfileScopedKey.of(liquidGlassNativeTabBarEnabledKey))
+
+    actual fun saveLiquidGlassNativeTabBarEnabled(enabled: Boolean) {
+        DesktopPreferences.putBoolean(preferencesName, ProfileScopedKey.of(liquidGlassNativeTabBarEnabledKey), enabled)
     }
 
     actual fun loadSelectedAppLanguage(): String? {
@@ -83,6 +95,7 @@ internal actual object ThemeSettingsStorage {
     actual fun exportToSyncPayload(): JsonObject = buildJsonObject {
         loadSelectedTheme()?.let { put(selectedThemeKey, encodeSyncString(it)) }
         loadAmoledEnabled()?.let { put(amoledEnabledKey, encodeSyncBoolean(it)) }
+        loadLiquidGlassNativeTabBarEnabled()?.let { put(liquidGlassNativeTabBarEnabledKey, encodeSyncBoolean(it)) }
         loadProfileSelectedAppLanguage()?.let { put(selectedAppLanguageKey, encodeSyncString(it)) }
     }
 
@@ -92,10 +105,9 @@ internal actual object ThemeSettingsStorage {
 
         payload.decodeSyncString(selectedThemeKey)?.let(::saveSelectedTheme)
         payload.decodeSyncBoolean(amoledEnabledKey)?.let(::saveAmoledEnabled)
-        payload.decodeSyncString(selectedAppLanguageKey)?.let { languageCode ->
-            saveSelectedAppLanguage(languageCode)
-            applySelectedAppLanguage(languageCode)
-        }
+        payload.decodeSyncBoolean(liquidGlassNativeTabBarEnabledKey)?.let(::saveLiquidGlassNativeTabBarEnabled)
+        payload.decodeSyncString(selectedAppLanguageKey)?.let(::saveSelectedAppLanguage)
+        applySelectedAppLanguage(loadSelectedAppLanguage() ?: AppLanguage.ENGLISH.code)
     }
 
     private fun loadProfileSelectedAppLanguage(): String? =

@@ -39,6 +39,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -61,6 +62,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavBackStackEntry
+import androidx.navigation.NavController
+import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -93,6 +96,10 @@ import com.nuvio.app.core.ui.NuvioToastController
 import com.nuvio.app.core.ui.NuvioFloatingPrompt
 import com.nuvio.app.core.ui.TraktListPickerDialog
 import com.nuvio.app.core.ui.NuvioTheme
+import com.nuvio.app.core.ui.LocalNuvioBottomNavigationOverlayPadding
+import com.nuvio.app.core.ui.NativeNavigationTab
+import com.nuvio.app.core.ui.NativeTabBridge
+import com.nuvio.app.core.ui.isLiquidGlassNativeTabBarSupported
 import com.nuvio.app.core.ui.localizedContinueWatchingSubtitle
 import com.nuvio.app.features.auth.AuthScreen
 import com.nuvio.app.features.addons.AddonRepository
@@ -123,11 +130,13 @@ import com.nuvio.app.features.player.PlayerRoute
 import com.nuvio.app.features.player.PlayerScreen
 import com.nuvio.app.features.player.sanitizePlaybackHeaders
 import com.nuvio.app.features.player.sanitizePlaybackResponseHeaders
+import com.nuvio.app.features.profiles.AvatarRepository
 import com.nuvio.app.features.profiles.NuvioProfile
 import com.nuvio.app.features.profiles.ProfileEditScreen
 import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.profiles.ProfileSelectionScreen
 import com.nuvio.app.features.profiles.ProfileSwitcherTab
+import com.nuvio.app.features.profiles.avatarStorageUrl
 import com.nuvio.app.features.search.SearchScreen
 import com.nuvio.app.features.settings.SettingsScreen
 import com.nuvio.app.features.settings.HomescreenSettingsScreen
@@ -261,6 +270,20 @@ enum class AppScreenTab {
     Settings,
 }
 
+private fun AppScreenTab.toNativeNavigationTab(): NativeNavigationTab = when (this) {
+    AppScreenTab.Home -> NativeNavigationTab.Home
+    AppScreenTab.Search -> NativeNavigationTab.Search
+    AppScreenTab.Library -> NativeNavigationTab.Library
+    AppScreenTab.Settings -> NativeNavigationTab.Settings
+}
+
+private fun NativeNavigationTab.toAppScreenTab(): AppScreenTab = when (this) {
+    NativeNavigationTab.Home -> AppScreenTab.Home
+    NativeNavigationTab.Search -> AppScreenTab.Search
+    NativeNavigationTab.Library -> AppScreenTab.Library
+    NativeNavigationTab.Settings -> AppScreenTab.Settings
+}
+
 private enum class AppGateScreen {
     Loading,
     Auth,
@@ -294,13 +317,38 @@ fun App() {
         LaunchedEffect(Unit) {
             NetworkStatusRepository.ensureStarted()
             ProfileRepository.loadCachedProfiles()
+            AvatarRepository.fetchAvatars()
         }
 
         val authState by AuthRepository.state.collectAsStateWithLifecycle()
         val profileState by ProfileRepository.state.collectAsStateWithLifecycle()
+        val profileAvatars by AvatarRepository.avatars.collectAsStateWithLifecycle()
         val networkStatusUiState by remember {
             NetworkStatusRepository.uiState
         }.collectAsStateWithLifecycle()
+
+        LaunchedEffect(
+            profileState.activeProfile?.profileIndex,
+            profileState.activeProfile?.name,
+            profileState.activeProfile?.avatarColorHex,
+            profileState.activeProfile?.avatarId,
+            profileAvatars,
+        ) {
+            val activeProfile = profileState.activeProfile
+            val avatarItem = activeProfile?.avatarId?.let { avatarId ->
+                profileAvatars.find { it.id == avatarId }
+            }
+            NativeTabBridge.publishProfileTabIcon(
+                name = activeProfile?.name,
+                avatarColorHex = activeProfile?.avatarColorHex,
+                avatarImageUrl = avatarItem
+                    ?.storagePath
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let(::avatarStorageUrl),
+                avatarBackgroundColorHex = avatarItem?.bgColor,
+            )
+        }
+
         var gateScreen by rememberSaveable { mutableStateOf(AppGateScreen.Loading.name) }
         var editingProfile by remember { mutableStateOf<NuvioProfile?>(null) }
         var isNewProfile by remember { mutableStateOf(false) }
@@ -467,6 +515,11 @@ private fun MainAppContent(
         val hapticFeedback = LocalHapticFeedback.current
         val coroutineScope = rememberCoroutineScope()
         var selectedTab by rememberSaveable { mutableStateOf(AppScreenTab.Home) }
+        val nativeRequestedTab by remember { NativeTabBridge.requestedTab }.collectAsStateWithLifecycle()
+        val liquidGlassNativeTabBarEnabled by remember {
+            ThemeSettingsRepository.liquidGlassNativeTabBarEnabled
+        }.collectAsStateWithLifecycle()
+        val liquidGlassNativeTabBarSupported = remember { isLiquidGlassNativeTabBarSupported() }
         var showExitConfirmation by rememberSaveable { mutableStateOf(false) }
         var selectedPosterForActions by remember { mutableStateOf<MetaPreview?>(null) }
         var selectedContinueWatchingForActions by remember { mutableStateOf<ContinueWatchingItem?>(null) }
@@ -515,6 +568,42 @@ private fun MainAppContent(
             .mapNotNull { it.manifest?.transportUrl }
             .distinct()
             .sorted()
+    }
+
+    LaunchedEffect(nativeRequestedTab) {
+        if (liquidGlassNativeTabBarSupported && liquidGlassNativeTabBarEnabled) {
+            selectedTab = nativeRequestedTab.toAppScreenTab()
+        }
+    }
+
+    LaunchedEffect(selectedTab) {
+        NativeTabBridge.publishSelectedTab(selectedTab.toNativeNavigationTab())
+    }
+
+    DisposableEffect(
+        navController,
+        liquidGlassNativeTabBarSupported,
+        liquidGlassNativeTabBarEnabled,
+        initialHomeReady,
+    ) {
+        fun publishNativeTabVisibilityForCurrentRoute() {
+            val visible = liquidGlassNativeTabBarSupported &&
+                liquidGlassNativeTabBarEnabled &&
+                initialHomeReady &&
+                navController.currentDestination?.hasRoute<TabsRoute>() == true
+            NativeTabBridge.publishTabBarVisible(visible)
+        }
+
+        val destinationChangedListener = NavController.OnDestinationChangedListener { _, _, _ ->
+            publishNativeTabVisibilityForCurrentRoute()
+        }
+
+        publishNativeTabVisibilityForCurrentRoute()
+        navController.addOnDestinationChangedListener(destinationChangedListener)
+        onDispose {
+            navController.removeOnDestinationChangedListener(destinationChangedListener)
+            NativeTabBridge.publishTabBarVisible(false)
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -888,6 +977,8 @@ private fun MainAppContent(
 
                     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                         val isTabletLayout = maxWidth >= 768.dp
+                        val useNativeBottomTabs =
+                            liquidGlassNativeTabBarSupported && liquidGlassNativeTabBarEnabled && initialHomeReady
                         val onProfileSelected: (NuvioProfile) -> Unit = { profile ->
                             profileSwitchLoading = true
                             selectedTab = AppScreenTab.Home
@@ -902,7 +993,7 @@ private fun MainAppContent(
                             containerColor = Color.Transparent,
                             contentWindowInsets = WindowInsets(0),
                             bottomBar = {
-                                if (!isTabletLayout) {
+                                if (!isTabletLayout && !useNativeBottomTabs) {
                                     key(selectedAppLanguage.code) {
                                         NuvioNavigationBar {
                                             NavItem(
@@ -940,58 +1031,62 @@ private fun MainAppContent(
                             },
                         ) { innerPadding ->
                             Box(modifier = Modifier.fillMaxSize()) {
-                                AppTabHost(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(innerPadding),
-                                    selectedTab = selectedTab,
-                                    onCatalogClick = onCatalogClick,
-                                    onPosterClick = { meta ->
-                                        navController.navigate(DetailRoute(type = meta.type, id = meta.id))
-                                    },
-                                    onPosterLongClick = { meta ->
-                                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        selectedPosterForActions = meta
-                                    },
-                                    onLibraryPosterClick = { item ->
-                                        navController.navigate(DetailRoute(type = item.type, id = item.id))
-                                    },
-                                    onLibrarySectionViewAllClick = onLibrarySectionViewAllClick,
-                                    onContinueWatchingClick = onContinueWatchingClick,
-                                    onContinueWatchingLongPress = onContinueWatchingLongPress,
-                                    onSwitchProfile = onSwitchProfile,
-                                    onHomescreenSettingsClick = { navController.navigate(HomescreenSettingsRoute) },
-                                    onMetaScreenSettingsClick = { navController.navigate(MetaScreenSettingsRoute) },
-                                    onContinueWatchingSettingsClick = { navController.navigate(ContinueWatchingSettingsRoute) },
-                                    onDownloadsSettingsClick = { navController.navigate(DownloadsSettingsRoute) },
-                                    onAddonsSettingsClick = { navController.navigate(AddonsSettingsRoute) },
-                                    onPluginsSettingsClick = {
-                                        if (AppFeaturePolicy.pluginsEnabled) {
-                                            navController.navigate(PluginsSettingsRoute)
-                                        }
-                                    },
-                                    onAccountSettingsClick = { navController.navigate(AccountSettingsRoute) },
-                                    onSupportersContributorsSettingsClick = {
-                                        navController.navigate(SupportersContributorsSettingsRoute)
-                                    },
-                                    onCheckForUpdatesClick = if (AppFeaturePolicy.inAppUpdaterEnabled) {
-                                        {
-                                            appUpdaterController.checkForUpdates(
-                                                force = true,
-                                                showNoUpdateFeedback = true,
-                                            )
-                                        }
-                                    } else {
-                                        null
-                                    },
-                                    onCollectionsSettingsClick = { navController.navigate(CollectionsRoute) },
-                                    onFolderClick = { collectionId, folderId ->
-                                        navController.navigate(FolderDetailRoute(collectionId = collectionId, folderId = folderId))
-                                    },
-                                    onInitialHomeContentRendered = { initialHomeReady = true },
-                                )
+                                CompositionLocalProvider(
+                                    LocalNuvioBottomNavigationOverlayPadding provides if (useNativeBottomTabs) 49.dp else 0.dp,
+                                ) {
+                                    AppTabHost(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .padding(innerPadding),
+                                        selectedTab = selectedTab,
+                                        onCatalogClick = onCatalogClick,
+                                        onPosterClick = { meta ->
+                                            navController.navigate(DetailRoute(type = meta.type, id = meta.id))
+                                        },
+                                        onPosterLongClick = { meta ->
+                                            hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            selectedPosterForActions = meta
+                                        },
+                                        onLibraryPosterClick = { item ->
+                                            navController.navigate(DetailRoute(type = item.type, id = item.id))
+                                        },
+                                        onLibrarySectionViewAllClick = onLibrarySectionViewAllClick,
+                                        onContinueWatchingClick = onContinueWatchingClick,
+                                        onContinueWatchingLongPress = onContinueWatchingLongPress,
+                                        onSwitchProfile = onSwitchProfile,
+                                        onHomescreenSettingsClick = { navController.navigate(HomescreenSettingsRoute) },
+                                        onMetaScreenSettingsClick = { navController.navigate(MetaScreenSettingsRoute) },
+                                        onContinueWatchingSettingsClick = { navController.navigate(ContinueWatchingSettingsRoute) },
+                                        onDownloadsSettingsClick = { navController.navigate(DownloadsSettingsRoute) },
+                                        onAddonsSettingsClick = { navController.navigate(AddonsSettingsRoute) },
+                                        onPluginsSettingsClick = {
+                                            if (AppFeaturePolicy.pluginsEnabled) {
+                                                navController.navigate(PluginsSettingsRoute)
+                                            }
+                                        },
+                                        onAccountSettingsClick = { navController.navigate(AccountSettingsRoute) },
+                                        onSupportersContributorsSettingsClick = {
+                                            navController.navigate(SupportersContributorsSettingsRoute)
+                                        },
+                                        onCheckForUpdatesClick = if (AppFeaturePolicy.inAppUpdaterEnabled) {
+                                            {
+                                                appUpdaterController.checkForUpdates(
+                                                    force = true,
+                                                    showNoUpdateFeedback = true,
+                                                )
+                                            }
+                                        } else {
+                                            null
+                                        },
+                                        onCollectionsSettingsClick = { navController.navigate(CollectionsRoute) },
+                                        onFolderClick = { collectionId, folderId ->
+                                            navController.navigate(FolderDetailRoute(collectionId = collectionId, folderId = folderId))
+                                        },
+                                        onInitialHomeContentRendered = { initialHomeReady = true },
+                                    )
+                                }
 
-                                if (isTabletLayout) {
+                                if (isTabletLayout && !useNativeBottomTabs) {
                                     key(selectedAppLanguage.code) {
                                         TabletFloatingTopBar(
                                             selectedTab = selectedTab,
@@ -1207,7 +1302,7 @@ private fun MainAppContent(
 
                         hasResolvedVideoId = false
                         val metaType = launch.parentMetaType ?: launch.type
-                        val metaId = launch.parentMetaId ?: return@LaunchedEffect
+                        val metaId = launch.parentMetaId
                         val resolvedVideoId = runCatching {
                             MetaDetailsRepository.fetch(metaType, metaId)
                         }.getOrNull()
