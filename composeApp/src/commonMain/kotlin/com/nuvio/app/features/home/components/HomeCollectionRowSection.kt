@@ -15,6 +15,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
@@ -75,9 +76,12 @@ private fun HomeCollectionRowSectionContent(
         rowContentPadding = PaddingValues(horizontal = sectionPadding),
         key = { folder -> "collection_${collection.id}_folder_${folder.id}" },
     ) { folder ->
+        val folderClick = onFolderClick?.let { callback ->
+            remember(collection.id, folder.id, callback) { { callback(collection.id, folder.id) } }
+        }
         CollectionFolderCard(
             folder = folder,
-            onClick = onFolderClick?.let { { it(collection.id, folder.id) } },
+            onClick = folderClick,
         )
     }
 }
@@ -187,8 +191,17 @@ private fun collectionFolderCardImageUrl(folder: CollectionFolder): String? {
     }
 }
 
-private fun firstNonBlank(vararg candidates: String?): String? {
-    return candidates.firstOrNull { !it.isNullOrBlank() }?.trim()
+private fun firstNonBlank(
+    first: String?,
+    second: String? = null,
+    third: String? = null,
+    fourth: String? = null,
+): String? {
+    first?.takeIf { it.isNotBlank() }?.trim()?.let { return it }
+    second?.takeIf { it.isNotBlank() }?.trim()?.let { return it }
+    third?.takeIf { it.isNotBlank() }?.trim()?.let { return it }
+    fourth?.takeIf { it.isNotBlank() }?.trim()?.let { return it }
+    return null
 }
 
 private fun isAnimatedCollectionFolderImage(

@@ -25,6 +25,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.contentColorFor
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -55,34 +56,24 @@ private fun continueWatchingProgressPercent(progressFraction: Float): Int =
 private fun ContinueWatchingItem.continueWatchingArtworkUrl(
     useEpisodeThumbnails: Boolean,
 ): String? = when {
-    isNextUp && useEpisodeThumbnails -> firstNonBlank(
-        episodeThumbnail,
-        poster,
-        background,
-        imageUrl,
-    )
-    isNextUp -> firstNonBlank(
-        poster,
-        background,
-        episodeThumbnail,
-        imageUrl,
-    )
-    useEpisodeThumbnails -> firstNonBlank(
-        episodeThumbnail,
-        poster,
-        background,
-        imageUrl,
-    )
-    else -> firstNonBlank(
-        poster,
-        background,
-        episodeThumbnail,
-        imageUrl,
-    )
+    isNextUp && useEpisodeThumbnails -> firstNonBlank(episodeThumbnail, poster, background, imageUrl)
+    isNextUp -> firstNonBlank(poster, background, episodeThumbnail, imageUrl)
+    useEpisodeThumbnails -> firstNonBlank(episodeThumbnail, poster, background, imageUrl)
+    else -> firstNonBlank(poster, background, episodeThumbnail, imageUrl)
 }
 
-private fun firstNonBlank(vararg values: String?): String? =
-    values.firstOrNull { value -> !value.isNullOrBlank() }?.trim()
+private fun firstNonBlank(
+    first: String?,
+    second: String? = null,
+    third: String? = null,
+    fourth: String? = null,
+): String? {
+    first?.takeIf { it.isNotBlank() }?.trim()?.let { return it }
+    second?.takeIf { it.isNotBlank() }?.trim()?.let { return it }
+    third?.takeIf { it.isNotBlank() }?.trim()?.let { return it }
+    fourth?.takeIf { it.isNotBlank() }?.trim()?.let { return it }
+    return null
+}
 
 @Composable
 internal fun HomeContinueWatchingSection(
@@ -148,22 +139,28 @@ private fun HomeContinueWatchingSectionContent(
         itemSpacing = layout.itemGap,
         key = { item -> item.videoId },
     ) { item ->
+        val itemClick = onItemClick?.let { callback ->
+            remember(item, callback) { { callback(item) } }
+        }
+        val itemLongClick = onItemLongPress?.let { callback ->
+            remember(item, callback) { { callback(item) } }
+        }
         when (style) {
             ContinueWatchingSectionStyle.Wide -> ContinueWatchingWideCard(
                 item = item,
                 layout = layout,
                 useEpisodeThumbnails = useEpisodeThumbnails,
                 blurNextUp = blurNextUp,
-                onClick = onItemClick?.let { { it(item) } },
-                onLongClick = onItemLongPress?.let { { it(item) } },
+                onClick = itemClick,
+                onLongClick = itemLongClick,
             )
             ContinueWatchingSectionStyle.Poster -> ContinueWatchingPosterCard(
                 item = item,
                 layout = layout,
                 useEpisodeThumbnails = useEpisodeThumbnails,
                 blurNextUp = blurNextUp,
-                onClick = onItemClick?.let { { it(item) } },
-                onLongClick = onItemLongPress?.let { { it(item) } },
+                onClick = itemClick,
+                onLongClick = itemLongClick,
             )
         }
     }

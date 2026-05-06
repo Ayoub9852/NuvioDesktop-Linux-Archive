@@ -27,6 +27,7 @@ private const val BASE_URL = "https://api.trakt.tv"
 object TraktEpisodeMappingService {
     private val log = Logger.withTag("TraktEpMapSvc")
     private val json = Json { ignoreUnknownKeys = true }
+    private val titleNormalizationRegex = Regex("[^a-z0-9]")
 
     private val cacheMutex = Mutex()
     private val mappingCache = mutableMapOf<String, EpisodeMappingEntry>()
@@ -463,7 +464,7 @@ object TraktEpisodeMappingService {
 
     private fun normalizeTitle(title: String?): String =
         title.orEmpty().trim().lowercase()
-            .replace(Regex("[^a-z0-9]"), "")
+            .replace(titleNormalizationRegex, "")
 }
 
 // ── Data classes ────────────────────────────────────────────────────────

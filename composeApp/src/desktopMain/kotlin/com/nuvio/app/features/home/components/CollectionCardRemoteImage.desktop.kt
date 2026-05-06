@@ -176,19 +176,22 @@ internal actual fun CollectionCardRemoteImage(
                 heightPx = decodeTarget.heightPx,
             )
         }
+        val cachedGif = remember(cacheKey) {
+            DesktopDecodedGifCache.get(cacheKey)
+        }
         var state by remember(cacheKey) {
             mutableStateOf<DesktopGifState>(
-                DesktopDecodedGifCache.get(cacheKey)?.let(DesktopGifState::Ready) ?: DesktopGifState.Loading,
+                cachedGif?.let(DesktopGifState::Ready) ?: DesktopGifState.Loading,
             )
         }
 
         LaunchedEffect(cacheKey) {
-            state = DesktopGifState.Loading
-            DesktopDecodedGifCache.get(cacheKey)?.let {
+            cachedGif?.let {
                 state = DesktopGifState.Ready(it)
                 return@LaunchedEffect
             }
 
+            state = DesktopGifState.Loading
             val decoded = DesktopGifInFlight.getOrDecode(cacheKey) {
                 downloadAndDecodeGif(imageUrl, decodeTarget)
             }
@@ -325,14 +328,14 @@ private fun decodeGifForCompose(
 
             try {
                 for (i in 0 until frameCount) {
-                    val frame = reader.read(i) ?: return null
+                    val frame = if (i == 0) firstImage else reader.read(i) ?: return null
                     val metadataRoot = reader.getImageMetadata(i)
                         .getAsTree("javax_imageio_gif_image_1.0") as? IIOMetadataNode
                         ?: return null
                     val meta = parseFrameMetadata(metadataRoot)
 
-                    val disposal = meta.disposalMethod.lowercase()
-                    val needsRestorePrevious = disposal == "restoretoprevious"
+                    val disposal = meta.disposalMethod
+                    val needsRestorePrevious = disposal.equals("restoretoprevious", ignoreCase = true)
                     if (needsRestorePrevious) {
                         gPrevious.drawImage(canvas, 0, 0, null)
                     }
@@ -346,8 +349,8 @@ private fun decodeGifForCompose(
                     outFrames.add(deepCopy(canvas).toComposeImageBitmap())
                     outDelays[i] = max(1, meta.delayCs) * 10
 
-                    when (disposal) {
-                        "restoretobackgroundcolor" -> {
+                    when {
+                        disposal.equals("restoretobackgroundcolor", ignoreCase = true) -> {
                             val clearX = destX.coerceIn(0, canvasW)
                             val clearY = destY.coerceIn(0, canvasH)
                             val clearW = (destX + destW).coerceAtMost(canvasW) - clearX
@@ -359,7 +362,7 @@ private fun decodeGifForCompose(
                                 gCanvas.composite = oldComposite
                             }
                         }
-                        "restoretoprevious" -> {
+                        disposal.equals("restoretoprevious", ignoreCase = true) -> {
                             val oldComposite = gCanvas.composite
                             gCanvas.composite = AlphaComposite.Src
                             gCanvas.drawImage(previousCanvas, 0, 0, null)

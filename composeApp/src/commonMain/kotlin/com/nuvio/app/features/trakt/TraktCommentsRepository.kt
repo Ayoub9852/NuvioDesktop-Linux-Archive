@@ -19,6 +19,7 @@ private val INLINE_SPOILER_REGEX = Regex(
     setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
 )
 private val INLINE_SPOILER_TAG_REGEX = Regex("\\[/?spoiler\\]", RegexOption.IGNORE_CASE)
+private val MULTIPLE_WHITESPACE_REGEX = Regex("\\s+")
 
 private val commentsJson = Json { ignoreUnknownKeys = true }
 
@@ -219,7 +220,7 @@ private fun stripInlineSpoilerMarkup(comment: String?): String {
     if (comment.isNullOrBlank()) return ""
     return comment
         .replace(INLINE_SPOILER_TAG_REGEX, "")
-        .replace(Regex("\\s+"), " ")
+        .replace(MULTIPLE_WHITESPACE_REGEX, " ")
         .trim()
 }
 

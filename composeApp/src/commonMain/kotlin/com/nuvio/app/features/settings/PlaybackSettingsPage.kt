@@ -912,7 +912,10 @@ private fun LanguageSelectionDialog(
                         .heightIn(max = 420.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    items(options) { option ->
+                    items(
+                        items = options,
+                        key = { option -> option.value ?: "default" },
+                    ) { option ->
                         val isSelected = option.value == selectedValue
                         val containerColor = if (isSelected) {
                             MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)

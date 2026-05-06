@@ -155,7 +155,9 @@ fun DetailSeriesContent(
         return
     }
 
-    val seasons = groupedEpisodes.keys.sortedBy(::seasonSortKey)
+    val seasons = remember(groupedEpisodes) {
+        groupedEpisodes.keys.sortedBy(::seasonSortKey)
+    }
     val defaultSeason = preferredSeasonNumber
         ?.takeIf { it in groupedEpisodes }
         ?: seasons.first()
