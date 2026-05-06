@@ -10,11 +10,61 @@ import java.io.File
 internal object WindowsNativeBootstrap {
     private const val LOAD_LIBRARY_SEARCH_DEFAULT_DIRS = 0x00001000
     private const val LOAD_LIBRARY_SEARCH_USER_DIRS = 0x00000400
+    private const val DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4L
+    private const val PROCESS_PER_MONITOR_DPI_AWARE = 2
 
     private val isWindows: Boolean
         get() = System.getProperty("os.name")?.contains("Windows", ignoreCase = true) == true
 
     private var bootstrapped = false
+    private var dpiAwarenessConfigured = false
+
+    @Synchronized
+    fun configureProcessDpiAwareness() {
+        if (!isWindows) {
+            DesktopRuntimeLog.info("dpiAwareness skipped: non-Windows platform")
+            return
+        }
+        if (dpiAwarenessConfigured) {
+            DesktopRuntimeLog.info("dpiAwareness skipped: already attempted")
+            return
+        }
+        dpiAwarenessConfigured = true
+
+        val user32 = runCatching { Native.load("user32", User32::class.java) }
+            .onFailure { DesktopRuntimeLog.error("dpiAwareness failed: cannot load user32", it) }
+            .getOrNull()
+
+        if (user32 != null) {
+            val context = Pointer.createConstant(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+            val perMonitorV2 = runCatching { user32.SetProcessDpiAwarenessContext(context) }
+                .onFailure { DesktopRuntimeLog.warn("dpiAwareness SetProcessDpiAwarenessContext threw ${it::class.simpleName}:${it.message}") }
+                .getOrNull()
+            val lastError = Native.getLastError()
+            DesktopRuntimeLog.info(
+                "dpiAwareness SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2) result=$perMonitorV2 lastError=$lastError",
+            )
+            if (perMonitorV2 == true) return
+        }
+
+        val shcore = runCatching { Native.load("shcore", Shcore::class.java) }
+            .onFailure { DesktopRuntimeLog.warn("dpiAwareness fallback unavailable: cannot load shcore ${it::class.simpleName}:${it.message}") }
+            .getOrNull()
+        if (shcore != null) {
+            val result = runCatching { shcore.SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE) }
+                .onFailure { DesktopRuntimeLog.warn("dpiAwareness SetProcessDpiAwareness threw ${it::class.simpleName}:${it.message}") }
+                .getOrNull()
+            DesktopRuntimeLog.info("dpiAwareness SetProcessDpiAwareness(PER_MONITOR) hresult=$result")
+            if (result == 0) return
+        }
+
+        if (user32 != null) {
+            val systemAware = runCatching { user32.SetProcessDPIAware() }
+                .onFailure { DesktopRuntimeLog.warn("dpiAwareness SetProcessDPIAware threw ${it::class.simpleName}:${it.message}") }
+                .getOrNull()
+            DesktopRuntimeLog.info("dpiAwareness SetProcessDPIAware fallback result=$systemAware lastError=${Native.getLastError()}")
+        }
+    }
 
     @Synchronized
     fun bootstrap() {
@@ -141,5 +191,14 @@ internal object WindowsNativeBootstrap {
         fun SetDefaultDllDirectories(directoryFlags: Int): Boolean
         fun AddDllDirectory(newDirectory: WString): Pointer?
         fun SetDllDirectoryW(pathName: WString): Boolean
+    }
+
+    private interface User32 : StdCallLibrary, Library {
+        fun SetProcessDpiAwarenessContext(value: Pointer): Boolean
+        fun SetProcessDPIAware(): Boolean
+    }
+
+    private interface Shcore : StdCallLibrary, Library {
+        fun SetProcessDpiAwareness(value: Int): Int
     }
 }

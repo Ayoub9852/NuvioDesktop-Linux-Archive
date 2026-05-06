@@ -70,6 +70,7 @@ private fun clampDpSizeToDisplay(size: DpSize): DpSize {
 
 fun main(args: Array<String>) {
     DesktopRuntimeLog.initialize()
+    WindowsNativeBootstrap.configureProcessDpiAwareness()
     DesktopRuntimeLog.installGlobalExceptionHandlers()
     val pid = DesktopRuntimeLog.processPid()
     DesktopRuntimeLog.info("app startup pid=$pid")
