@@ -8,6 +8,9 @@ actual object AppUpdaterPlatform {
     actual val gitHubRepo: String = "NuvioMobile"
     actual val stableReleaseChannelBranch: String? = "cmp-rewrite"
     actual val nightlyReleaseTag: String? = null
+    actual val installerAssetExtensions: List<String> = listOf(".apk")
+    actual val portableZipAssetExtensions: List<String> = emptyList()
+    actual val portableZipAssetNameContains: String? = null
 
     actual fun getSupportedAbis(): List<String> = emptyList()
 
@@ -18,6 +21,8 @@ actual object AppUpdaterPlatform {
     actual fun getNightlyBuildMode(): Boolean = false
 
     actual fun setNightlyBuildMode(enabled: Boolean) = Unit
+
+    actual fun prefersPortableUpdate(): Boolean = false
 
     actual suspend fun downloadApk(
         assetUrl: String,
@@ -31,6 +36,9 @@ actual object AppUpdaterPlatform {
 
     actual fun installDownloadedApk(path: String): Result<Unit> =
         Result.failure(IllegalStateException("In-app updates are unavailable on this build."))
+
+    actual fun openDownloadedFileLocation(path: String): Result<Unit> =
+        Result.failure(IllegalStateException("Opening download location is unavailable on this build."))
 
     actual fun openReleasePage(url: String): Result<Unit> =
         Result.failure(IllegalStateException("Opening release pages is unavailable on this build."))

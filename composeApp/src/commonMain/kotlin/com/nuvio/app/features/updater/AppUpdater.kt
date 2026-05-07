@@ -45,6 +45,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
@@ -66,6 +68,19 @@ data class AppUpdate(
     val versionName: String?,
     val versionCode: Int?,
     val channelLabel: String,
+    val availableAssets: List<AppUpdateAsset> = emptyList(),
+)
+
+enum class AppUpdateAssetKind {
+    Installer,
+    PortableZip,
+}
+
+data class AppUpdateAsset(
+    val name: String,
+    val url: String,
+    val sizeBytes: Long?,
+    val kind: AppUpdateAssetKind,
 )
 
 data class AppUpdaterUiState(
@@ -79,6 +94,7 @@ data class AppUpdaterUiState(
     val showUnknownSourcesDialog: Boolean = false,
     val errorMessage: String? = null,
     val nightlyBuildModeEnabled: Boolean = AppUpdaterPlatform.getNightlyBuildMode(),
+    val selectedAssetKind: AppUpdateAssetKind? = null,
 )
 
 @Serializable
@@ -239,12 +255,18 @@ private object AppUpdaterRepository {
             ?: release.name?.takeIf { it.isNotBlank() }
             ?: error("Release has no tag or name")
 
-        val asset = if (AppUpdaterPlatform.supportsDownloadAndInstall) {
-            chooseBestApkAsset(release.assets)
-                ?: error("No APK asset found in the release")
-        } else {
-            chooseBestDesktopAsset(release.assets)
+        val availableAssets = buildList {
+            val installerAsset = chooseInstallerAsset(release.assets)
+            if (installerAsset != null) add(installerAsset)
+
+            val portableZipAsset = choosePortableZipAsset(release.assets)
+            if (portableZipAsset != null) add(portableZipAsset)
         }
+        if (availableAssets.isEmpty()) {
+            val exts = AppUpdaterPlatform.installerAssetExtensions.joinToString(", ")
+            throw IllegalStateException("No update asset found in the release (installer extensions: $exts).")
+        }
+        val selectedAsset = chooseDefaultAsset(availableAssets)
         val releaseVersion = AppUpdateVersionComparator.parseReleaseVersion(
             tag = release.tagName,
             title = release.name,
@@ -256,12 +278,13 @@ private object AppUpdaterRepository {
             title = release.name?.takeIf { it.isNotBlank() } ?: tag,
             notes = release.body.orEmpty(),
             releaseUrl = release.htmlUrl,
-            assetName = asset?.name,
-            assetUrl = asset?.browserDownloadUrl,
-            assetSizeBytes = asset?.size,
+            assetName = selectedAsset?.name,
+            assetUrl = selectedAsset?.url,
+            assetSizeBytes = selectedAsset?.sizeBytes,
             versionName = releaseVersion.versionName,
             versionCode = releaseVersion.versionCode,
             channelLabel = if (nightlyMode && nightlyTag != null) nightlyTag else "latest",
+            availableAssets = availableAssets,
         )
     }
 
@@ -298,11 +321,84 @@ private object AppUpdaterRepository {
         } ?: apkAssets.first()
     }
 
-    private fun chooseBestDesktopAsset(assets: List<GitHubAssetDto>): GitHubAssetDto? {
-        val preferredExtensions = listOf(".exe", ".msi", ".zip")
-        return preferredExtensions.firstNotNullOfOrNull { extension ->
-            assets.firstOrNull { asset -> asset.name.endsWith(extension, ignoreCase = true) }
-        } ?: assets.firstOrNull()
+    private fun chooseInstallerAsset(assets: List<GitHubAssetDto>): AppUpdateAsset? {
+        val installerExtensions = AppUpdaterPlatform.installerAssetExtensions
+        if (installerExtensions.isEmpty()) return null
+
+        val portableHint = AppUpdaterPlatform.portableZipAssetNameContains?.lowercase()
+        val avoidPortableNames = !portableHint.isNullOrBlank()
+
+        // Android: ABI-aware `.apk` selection.
+        if (installerExtensions.any { it.equals(".apk", ignoreCase = true) }) {
+            val apk = chooseBestApkAsset(assets) ?: return null
+            return AppUpdateAsset(
+                name = apk.name,
+                url = apk.browserDownloadUrl,
+                sizeBytes = apk.size,
+                kind = AppUpdateAssetKind.Installer,
+            )
+        }
+
+        val installerExtensionsLower = installerExtensions.map { it.lowercase() }
+        val installerCandidates = assets.filter { asset ->
+            val nameLower = asset.name.lowercase()
+            val hasAllowedExt = installerExtensionsLower.any { ext -> nameLower.endsWith(ext) }
+            val isPortable = avoidPortableNames && nameLower.contains(portableHint!!)
+            hasAllowedExt && !isPortable
+        }
+
+        val picked = installerExtensionsLower.firstNotNullOfOrNull { ext ->
+            installerCandidates.firstOrNull { it.name.lowercase().endsWith(ext) }
+        } ?: installerCandidates.firstOrNull()
+
+        return picked?.let { candidate ->
+            AppUpdateAsset(
+                name = candidate.name,
+                url = candidate.browserDownloadUrl,
+                sizeBytes = candidate.size,
+                kind = AppUpdateAssetKind.Installer,
+            )
+        }
+    }
+
+    private fun choosePortableZipAsset(assets: List<GitHubAssetDto>): AppUpdateAsset? {
+        val portableExtensions = AppUpdaterPlatform.portableZipAssetExtensions
+        if (portableExtensions.isEmpty()) return null
+
+        val hint = AppUpdaterPlatform.portableZipAssetNameContains?.lowercase()
+        val portableExtensionsLower = portableExtensions.map { it.lowercase() }
+
+        val candidates = assets.filter { asset ->
+            val nameLower = asset.name.lowercase()
+            val hasAllowedExt = portableExtensionsLower.any { ext -> nameLower.endsWith(ext) }
+            val matchesHint = if (hint.isNullOrBlank()) {
+                true
+            } else {
+                nameLower.contains(hint)
+            }
+            hasAllowedExt && matchesHint
+        }
+
+        val picked = candidates.firstOrNull()
+        return picked?.let { candidate ->
+            AppUpdateAsset(
+                name = candidate.name,
+                url = candidate.browserDownloadUrl,
+                sizeBytes = candidate.size,
+                kind = AppUpdateAssetKind.PortableZip,
+            )
+        }
+    }
+
+    private fun chooseDefaultAsset(assets: List<AppUpdateAsset>): AppUpdateAsset? {
+        if (assets.isEmpty()) return null
+        return if (AppUpdaterPlatform.prefersPortableUpdate()) {
+            assets.firstOrNull { it.kind == AppUpdateAssetKind.PortableZip }
+                ?: assets.first()
+        } else {
+            assets.firstOrNull { it.kind == AppUpdateAssetKind.Installer }
+                ?: assets.first()
+        }
     }
 }
 
@@ -313,6 +409,7 @@ class AppUpdaterController internal constructor(
     val uiState: StateFlow<AppUpdaterUiState> = _uiState.asStateFlow()
 
     private var autoCheckStarted = false
+    private val downloadMutex = Mutex()
 
     fun ensureAutoCheckStarted() {
         if (
@@ -371,6 +468,7 @@ class AppUpdaterController internal constructor(
                         showDialog = shouldShowDialog,
                         showUnknownSourcesDialog = false,
                         errorMessage = null,
+                        selectedAssetKind = update.availableAssets.firstOrNull { it.name == update.assetName }?.kind,
                     )
                 }
 
@@ -413,6 +511,25 @@ class AppUpdaterController internal constructor(
                 downloadedApkPath = null,
                 downloadProgress = null,
                 errorMessage = null,
+                selectedAssetKind = null,
+            )
+        }
+    }
+
+    fun selectUpdateAsset(kind: AppUpdateAssetKind) {
+        _uiState.update { state ->
+            val update = state.update ?: return@update state
+            val selected = update.availableAssets.firstOrNull { it.kind == kind } ?: return@update state
+            state.copy(
+                selectedAssetKind = selected.kind,
+                downloadedApkPath = null,
+                downloadProgress = null,
+                errorMessage = null,
+                update = update.copy(
+                    assetName = selected.name,
+                    assetUrl = selected.url,
+                    assetSizeBytes = selected.sizeBytes,
+                ),
             )
         }
     }
@@ -434,6 +551,7 @@ class AppUpdaterController internal constructor(
     }
 
     fun downloadUpdate() {
+        if (uiState.value.isDownloading) return
         val update = _uiState.value.update ?: return
         if (!AppUpdaterPlatform.supportsDownloadAndInstall) {
             openReleasePage()
@@ -447,43 +565,57 @@ class AppUpdaterController internal constructor(
         }
 
         scope.launch {
-            _uiState.update { state ->
-                state.copy(
-                    isDownloading = true,
-                    downloadProgress = 0f,
-                    errorMessage = null,
-                )
-            }
-
-            AppUpdaterPlatform.downloadApk(
-                assetUrl = assetUrl,
-                assetName = assetName,
-            ) { downloadedBytes, totalBytes ->
-                val progress = if (totalBytes != null && totalBytes > 0L) {
-                    (downloadedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
-                } else {
-                    null
-                }
-                _uiState.update { state -> state.copy(downloadProgress = progress) }
-            }.onSuccess { path ->
+            downloadMutex.withLock {
                 _uiState.update { state ->
                     state.copy(
-                        isDownloading = false,
-                        downloadProgress = 1f,
-                        downloadedApkPath = path,
+                        isDownloading = true,
+                        downloadProgress = 0f,
                         errorMessage = null,
                     )
                 }
-                installDownloadedUpdate()
-            }.onFailure { error ->
-                _uiState.update { state ->
-                    state.copy(
-                        isDownloading = false,
-                        downloadProgress = null,
-                        downloadedApkPath = null,
-                        errorMessage = error.message ?: getString(Res.string.updates_download_failed),
-                        showDialog = true,
-                    )
+
+                val selectedAssetKind = _uiState.value.selectedAssetKind ?: AppUpdateAssetKind.Installer
+                AppUpdaterPlatform.downloadApk(
+                    assetUrl = assetUrl,
+                    assetName = assetName,
+                ) { downloadedBytes, totalBytes ->
+                    val progress = if (totalBytes != null && totalBytes > 0L) {
+                        (downloadedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
+                    } else {
+                        null
+                    }
+                    _uiState.update { state -> state.copy(downloadProgress = progress) }
+                }.onSuccess { path ->
+                    _uiState.update { state ->
+                        state.copy(
+                            isDownloading = false,
+                            downloadProgress = 1f,
+                            downloadedApkPath = path,
+                            errorMessage = null,
+                        )
+                    }
+                    if (selectedAssetKind == AppUpdateAssetKind.PortableZip) {
+                        AppUpdaterPlatform.openDownloadedFileLocation(path).onFailure { error ->
+                            _uiState.update { state ->
+                                state.copy(
+                                    errorMessage = error.message ?: getString(Res.string.updates_open_release_failed),
+                                    showDialog = true,
+                                )
+                            }
+                        }
+                    } else {
+                        installDownloadedUpdate()
+                    }
+                }.onFailure { error ->
+                    _uiState.update { state ->
+                        state.copy(
+                            isDownloading = false,
+                            downloadProgress = null,
+                            downloadedApkPath = null,
+                            errorMessage = error.message ?: getString(Res.string.updates_download_failed),
+                            showDialog = true,
+                        )
+                    }
                 }
             }
         }
@@ -653,6 +785,30 @@ fun AppUpdaterHost(
                             }
                         }
 
+                        if (update.availableAssets.size > 1 && !state.isDownloading) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                update.availableAssets.forEach { asset ->
+                                    OutlinedButton(
+                                        modifier = Modifier.weight(1f),
+                                        onClick = { controller.selectUpdateAsset(asset.kind) },
+                                        enabled = state.selectedAssetKind != asset.kind,
+                                    ) {
+                                        Text(
+                                            text = when (asset.kind) {
+                                                AppUpdateAssetKind.Installer -> stringResource(Res.string.updates_asset_choice_installer)
+                                                AppUpdateAssetKind.PortableZip -> stringResource(Res.string.updates_asset_choice_portable_zip)
+                                            },
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
                         if (state.isDownloading || state.downloadProgress != null) {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 LinearProgressIndicator(
@@ -709,6 +865,11 @@ fun AppUpdaterHost(
                             onClick = {
                                 when {
                                     state.showUnknownSourcesDialog -> controller.resumeInstallation()
+                                    state.downloadedApkPath != null && state.selectedAssetKind == AppUpdateAssetKind.PortableZip -> {
+                                        state.downloadedApkPath?.let { path ->
+                                            AppUpdaterPlatform.openDownloadedFileLocation(path)
+                                        }
+                                    }
                                     state.downloadedApkPath != null -> controller.installDownloadedUpdate()
                                     !AppUpdaterPlatform.supportsDownloadAndInstall -> controller.openReleasePage()
                                     else -> controller.downloadUpdate()
@@ -723,6 +884,8 @@ fun AppUpdaterHost(
                             Text(
                                 when {
                                     state.showUnknownSourcesDialog -> stringResource(Res.string.action_continue)
+                                    state.downloadedApkPath != null && state.selectedAssetKind == AppUpdateAssetKind.PortableZip ->
+                                        stringResource(Res.string.updates_action_open_download_folder)
                                     state.downloadedApkPath != null -> stringResource(Res.string.action_install)
                                     state.isDownloading -> stringResource(Res.string.updates_message_downloading)
                                     !AppUpdaterPlatform.supportsDownloadAndInstall -> stringResource(Res.string.action_open_release)

@@ -1082,7 +1082,10 @@
     <string name="updates_message_ready">Une nouvelle version est prête à être installée.</string>
     <string name="updates_not_available">Les mises à jour intégrées ne sont pas disponibles dans cette version.</string>
     <string name="updates_open_release_failed">Impossible d'ouvrir la release GitHub.</string>
+    <string name="updates_action_open_download_folder">Ouvrir l'emplacement du fichier téléchargé</string>
     <string name="updates_preparing_download">Préparation du téléchargement</string>
+    <string name="updates_asset_choice_installer">Installateur Windows</string>
+    <string name="updates_asset_choice_portable_zip">ZIP portable</string>
     <string name="updates_release_build_line">Canal %1$s • build %2$d</string>
     <string name="updates_release_channel_line">Canal %1$s</string>
     <string name="updates_release_notes">Notes de version</string>
