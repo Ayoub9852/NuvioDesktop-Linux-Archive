@@ -38,6 +38,69 @@ private val addonHttpClient: HttpClient = HttpClient.newBuilder()
 private const val maxRawResponseBodyChars = 1024 * 1024
 private const val truncationSuffix = "\n...[truncated]"
 
+private const val URI_HEX = "0123456789ABCDEF"
+
+// Java's URI.create() rejects characters that are common in real-world addon URLs
+// (e.g. Stremio/Torrentio configurations use `|` as a separator). Other platforms
+// (OkHttp on Android, Ktor/Darwin on iOS) accept these characters as-is. Percent-
+// encode anything that is not allowed in a URI path/query/fragment while leaving
+// already percent-encoded sequences and structural characters intact.
+// Visible to tests in desktopTest.
+internal fun sanitizeUrlForJavaUri(url: String): String {
+    val builder = StringBuilder(url.length + 16)
+    var i = 0
+    while (i < url.length) {
+        val c = url[i]
+        if (
+            c == '%' &&
+            i + 2 < url.length &&
+            url[i + 1].isAsciiHex() &&
+            url[i + 2].isAsciiHex()
+        ) {
+            builder.append(c)
+            builder.append(url[i + 1])
+            builder.append(url[i + 2])
+            i += 3
+            continue
+        }
+        if (c.code < 0x80 && c.isUriSafeChar()) {
+            builder.append(c)
+            i++
+            continue
+        }
+        val end = if (
+            c.isHighSurrogate() &&
+            i + 1 < url.length &&
+            url[i + 1].isLowSurrogate()
+        ) {
+            i + 2
+        } else {
+            i + 1
+        }
+        url.substring(i, end).toByteArray(Charsets.UTF_8).forEach { rawByte ->
+            val value = rawByte.toInt() and 0xFF
+            builder.append('%')
+            builder.append(URI_HEX[value ushr 4])
+            builder.append(URI_HEX[value and 0x0F])
+        }
+        i = end
+    }
+    return builder.toString()
+}
+
+private fun Char.isAsciiHex(): Boolean =
+    this in '0'..'9' || this in 'A'..'F' || this in 'a'..'f'
+
+private fun Char.isUriSafeChar(): Boolean =
+    this in 'A'..'Z' ||
+        this in 'a'..'z' ||
+        this in '0'..'9' ||
+        this == '-' || this == '_' || this == '.' || this == '~' ||
+        this == '!' || this == '$' || this == '&' || this == '\'' ||
+        this == '(' || this == ')' || this == '*' || this == '+' ||
+        this == ',' || this == ';' || this == '=' ||
+        this == ':' || this == '@' || this == '/' || this == '?' || this == '#'
+
 private fun requestAllowsBody(method: String): Boolean =
     when (method.uppercase()) {
         "POST", "PUT", "PATCH", "DELETE" -> true
@@ -56,7 +119,7 @@ private suspend fun executeRequest(
     body: String,
 ) = withContext(Dispatchers.IO) {
     val builder = HttpRequest.newBuilder()
-        .uri(URI.create(url))
+        .uri(URI.create(sanitizeUrlForJavaUri(url)))
         .timeout(Duration.ofSeconds(60))
 
     headers.withoutAcceptEncoding().forEach { (key, value) ->
