@@ -1,11 +1,8 @@
 package com.nuvio.app.features.addons
 
 import com.nuvio.app.desktop.DesktopPreferences
-import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
-import java.time.Duration
+import java.net.HttpURLConnection
+import java.net.URL
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -30,76 +27,37 @@ internal actual object AddonStorage {
     }
 }
 
-private val addonHttpClient: HttpClient = HttpClient.newBuilder()
-    .connectTimeout(Duration.ofSeconds(60))
-    .followRedirects(HttpClient.Redirect.NORMAL)
-    .build()
-
 private const val maxRawResponseBodyChars = 1024 * 1024
 private const val truncationSuffix = "\n...[truncated]"
 
-private const val URI_HEX = "0123456789ABCDEF"
+private const val addonRequestTimeoutMs = 60_000
 
-// Java's URI.create() rejects characters that are common in real-world addon URLs
-// (e.g. Stremio/Torrentio configurations use `|` as a separator). Other platforms
-// (OkHttp on Android, Ktor/Darwin on iOS) accept these characters as-is. Percent-
-// encode anything that is not allowed in a URI path/query/fragment while leaving
-// already percent-encoded sequences and structural characters intact.
-// Visible to tests in desktopTest.
-internal fun sanitizeUrlForJavaUri(url: String): String {
-    val builder = StringBuilder(url.length + 16)
-    var i = 0
-    while (i < url.length) {
-        val c = url[i]
-        if (
-            c == '%' &&
-            i + 2 < url.length &&
-            url[i + 1].isAsciiHex() &&
-            url[i + 2].isAsciiHex()
-        ) {
-            builder.append(c)
-            builder.append(url[i + 1])
-            builder.append(url[i + 2])
-            i += 3
-            continue
-        }
-        if (c.code < 0x80 && c.isUriSafeChar()) {
-            builder.append(c)
-            i++
-            continue
-        }
-        val end = if (
-            c.isHighSurrogate() &&
-            i + 1 < url.length &&
-            url[i + 1].isLowSurrogate()
-        ) {
-            i + 2
-        } else {
-            i + 1
-        }
-        url.substring(i, end).toByteArray(Charsets.UTF_8).forEach { rawByte ->
-            val value = rawByte.toInt() and 0xFF
-            builder.append('%')
-            builder.append(URI_HEX[value ushr 4])
-            builder.append(URI_HEX[value and 0x0F])
-        }
-        i = end
-    }
-    return builder.toString()
-}
+private data class DesktopAddonHttpResponse(
+    val statusCode: Int,
+    val statusText: String,
+    val url: String,
+    val body: String,
+    val headers: Map<String, List<String>>,
+)
 
-private fun Char.isAsciiHex(): Boolean =
-    this in '0'..'9' || this in 'A'..'F' || this in 'a'..'f'
+// Stremio/Torrentio addons embed configuration in the URL path using `|` as a
+// separator. Torrentio's router requires the literal pipe — replacing it with
+// `%7C` returns 404. HttpURLConnection accepts `|` in the URL, while the
+// stricter java.net.http.HttpClient + URI.create() does not. Re-decode any
+// `%7C` to `|` here so URLs that arrived already-encoded (e.g. synced from
+// Android via Supabase or pasted from a configurator) still hit the right
+// route on Desktop.
+private fun normalizeDesktopAddonRequestUrl(url: String): String =
+    url.trim()
+        .replace("%7C", "|", ignoreCase = true)
 
-private fun Char.isUriSafeChar(): Boolean =
-    this in 'A'..'Z' ||
-        this in 'a'..'z' ||
-        this in '0'..'9' ||
-        this == '-' || this == '_' || this == '.' || this == '~' ||
-        this == '!' || this == '$' || this == '&' || this == '\'' ||
-        this == '(' || this == ')' || this == '*' || this == '+' ||
-        this == ',' || this == ';' || this == '=' ||
-        this == ':' || this == '@' || this == '/' || this == '?' || this == '#'
+// `URL(String)` is deprecated since JDK 20 in favor of `URI.create(...).toURL()`,
+// but URI is the strict RFC 3986 parser that rejects `|` (and that mismatch is
+// exactly the bug we are working around for Torrentio-style addon URLs). We
+// keep the legacy permissive parser on purpose.
+@Suppress("DEPRECATION")
+private fun openAddonRequestUrl(rawUrl: String): URL =
+    URL(normalizeDesktopAddonRequestUrl(rawUrl))
 
 private fun requestAllowsBody(method: String): Boolean =
     when (method.uppercase()) {
@@ -117,22 +75,58 @@ private suspend fun executeRequest(
     url: String,
     headers: Map<String, String>,
     body: String,
-) = withContext(Dispatchers.IO) {
-    val builder = HttpRequest.newBuilder()
-        .uri(URI.create(sanitizeUrlForJavaUri(url)))
-        .timeout(Duration.ofSeconds(60))
+): DesktopAddonHttpResponse = withContext(Dispatchers.IO) {
+    val connection = (openAddonRequestUrl(url).openConnection() as HttpURLConnection).apply {
+        requestMethod = method.uppercase()
+        connectTimeout = addonRequestTimeoutMs
+        readTimeout = addonRequestTimeoutMs
+        instanceFollowRedirects = true
 
-    headers.withoutAcceptEncoding().forEach { (key, value) ->
-        builder.header(key, value)
+        headers.withoutAcceptEncoding().forEach { (key, value) ->
+            setRequestProperty(key, value)
+        }
+
+        if (requestAllowsBody(method)) {
+            doOutput = true
+            outputStream.use { stream ->
+                stream.write(body.toByteArray(Charsets.UTF_8))
+            }
+        }
     }
 
-    val request = if (requestAllowsBody(method)) {
-        builder.method(method.uppercase(), HttpRequest.BodyPublishers.ofString(body))
-    } else {
-        builder.method(method.uppercase(), HttpRequest.BodyPublishers.noBody())
-    }.build()
+    try {
+        val statusCode = connection.responseCode
+        val statusText = connection.responseMessage.orEmpty()
+        val responseBody = readResponseBody(connection, statusCode)
 
-    addonHttpClient.send(request, HttpResponse.BodyHandlers.ofString())
+        DesktopAddonHttpResponse(
+            statusCode = statusCode,
+            statusText = statusText,
+            url = connection.url.toString(),
+            body = responseBody,
+            headers = connection.headerFields
+                .filterKeys { key -> key != null }
+                .mapKeys { (key, _) -> key!!.lowercase() },
+        )
+    } finally {
+        connection.disconnect()
+    }
+}
+
+private fun readResponseBody(
+    connection: HttpURLConnection,
+    statusCode: Int,
+): String {
+    val stream = if (statusCode in 200..299) {
+        runCatching { connection.inputStream }.getOrNull()
+    } else {
+        connection.errorStream ?: runCatching { connection.inputStream }.getOrNull()
+    }
+
+    return stream
+        ?.bufferedReader(Charsets.UTF_8)
+        ?.use { it.readText() }
+        .orEmpty()
 }
 
 private suspend fun executeTextRequest(
@@ -142,9 +136,9 @@ private suspend fun executeTextRequest(
     body: String = "",
 ): String {
     val response = executeRequest(method, url, headers, body)
-    val payload = response.body()
-    if (response.statusCode() !in 200..299) {
-        error("Request failed with HTTP ${response.statusCode()}")
+    val payload = response.body
+    if (response.statusCode !in 200..299) {
+        error("Request failed with HTTP ${response.statusCode}")
     }
     if (payload.isBlank()) {
         throw IllegalStateException("Empty response body")
@@ -202,18 +196,18 @@ actual suspend fun httpRequestRaw(
     body: String,
 ): RawHttpResponse {
     val response = executeRequest(method, url, headers, body)
-    val payload = response.body()
+    val payload = response.body
     val limitedPayload = if (payload.length > maxRawResponseBodyChars) {
         payload.take(maxRawResponseBodyChars) + truncationSuffix
     } else {
         payload
     }
     return RawHttpResponse(
-        status = response.statusCode(),
-        statusText = response.version().toString(),
-        url = response.uri().toString(),
+        status = response.statusCode,
+        statusText = response.statusText,
+        url = response.url,
         body = limitedPayload,
-        headers = response.headers().map().entries.associate { (key, values) ->
+        headers = response.headers.entries.associate { (key, values) ->
             key.lowercase() to values.joinToString(",")
         },
     )
