@@ -120,8 +120,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "$($AppDir.Replace('\', '\\'))\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
 [Icons]
-Name: "{group}\Nuvio"; Filename: "{app}\Nuvio.exe"; IconFilename: "$($AppIcon.Replace('\', '\\'))"
-Name: "{autodesktop}\Nuvio"; Filename: "{app}\Nuvio.exe"; IconFilename: "$($AppIcon.Replace('\', '\\'))"; Tasks: desktopicon
+Name: "{group}\Nuvio"; Filename: "{app}\Nuvio.exe"; IconFilename: "{app}\Nuvio.exe"
+Name: "{autodesktop}\Nuvio"; Filename: "{app}\Nuvio.exe"; IconFilename: "{app}\Nuvio.exe"; Tasks: desktopicon
 
 [Registry]
 Root: HKCU; Subkey: "Software\Classes\nuvio"; ValueType: string; ValueData: "URL:Nuvio Protocol"; Flags: uninsdeletekey
