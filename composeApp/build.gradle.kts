@@ -686,12 +686,21 @@ tasks.register<Zip>("packageReleasePortableZip") {
 
     val portableRootName = "Nuvio-${releaseAppVersionName}-portable"
     val appImageDir = layout.buildDirectory.dir("compose/binaries/main-release/app/Nuvio")
+    val portableMarkerFile = layout.buildDirectory.file("compose/tmp/portable-marker/Nuvio.portable")
 
-    from(appImageDir)
     archiveBaseName.set("Nuvio-${releaseAppVersionName}-portable")
     archiveExtension.set("zip")
     destinationDirectory.set(layout.buildDirectory.dir("compose/binaries/main-release/portable"))
+
+    // Ensure the portable marker sits next to `Nuvio.exe` inside the generated ZIP root.
     into(portableRootName)
+    from(appImageDir)
+    doFirst {
+        val markerFile = portableMarkerFile.get().asFile
+        markerFile.parentFile.mkdirs()
+        markerFile.writeText("")
+    }
+    from(portableMarkerFile)
 }
 
 val renameReleaseDmgArtifact = tasks.register<RenameReleaseDmgTask>("renameReleaseDmgArtifact") {

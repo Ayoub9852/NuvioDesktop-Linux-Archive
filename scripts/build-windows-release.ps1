@@ -88,7 +88,17 @@ if (Test-Path $PortableZipPath) {
 }
 
 Write-Host "Creating portable ZIP..." -ForegroundColor Green
+
+# Portable updater marker: must be next to `Nuvio.exe` inside the ZIP.
+# We create it only for the portable ZIP step (after Inno packaging) to avoid
+# changing the app image that Inno uses.
+$PortableMarkerPath = Join-Path $PortableDir "Nuvio.portable"
+# Create an actually empty marker file (no newline bytes).
+New-Item -ItemType File -Path $PortableMarkerPath -Force | Out-Null
 Compress-Archive -Path $PortableDir -DestinationPath $PortableZipPath -CompressionLevel Optimal
+
+# ZIP is already created; clean marker from the app image folder.
+Remove-Item $PortableMarkerPath -Force -ErrorAction SilentlyContinue
 
 Write-Host ""
 Write-Host "== Build outputs ==" -ForegroundColor Cyan
