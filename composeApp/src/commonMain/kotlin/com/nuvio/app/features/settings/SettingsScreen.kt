@@ -81,6 +81,8 @@ fun SettingsScreen(
     onAccountClick: () -> Unit = {},
     onSupportersContributorsClick: () -> Unit = {},
     onCheckForUpdatesClick: (() -> Unit)? = null,
+    nightlyUpdateModeEnabled: Boolean = false,
+    onNightlyUpdateModeChange: ((Boolean) -> Unit)? = null,
     onCollectionsClick: () -> Unit = {},
 ) {
     BoxWithConstraints(
@@ -218,6 +220,8 @@ fun SettingsScreen(
                 onDownloadsClick = onDownloadsClick,
                 onSupportersContributorsClick = onSupportersContributorsClick,
                 onCheckForUpdatesClick = onCheckForUpdatesClick,
+                nightlyUpdateModeEnabled = nightlyUpdateModeEnabled,
+                onNightlyUpdateModeChange = onNightlyUpdateModeChange,
                 onCollectionsClick = onCollectionsClick,
             )
         } else {
@@ -269,6 +273,8 @@ fun SettingsScreen(
                 onAccountClick = onAccountClick,
                 onSupportersContributorsClick = onSupportersContributorsClick,
                 onCheckForUpdatesClick = onCheckForUpdatesClick,
+                nightlyUpdateModeEnabled = nightlyUpdateModeEnabled,
+                onNightlyUpdateModeChange = onNightlyUpdateModeChange,
                 onCollectionsClick = onCollectionsClick,
             )
         }
@@ -324,6 +330,8 @@ private fun MobileSettingsScreen(
     onAccountClick: () -> Unit = {},
     onSupportersContributorsClick: () -> Unit = {},
     onCheckForUpdatesClick: (() -> Unit)? = null,
+    nightlyUpdateModeEnabled: Boolean = false,
+    onNightlyUpdateModeChange: ((Boolean) -> Unit)? = null,
     onCollectionsClick: () -> Unit = {},
 ) {
     val saveableStateHolder = rememberSaveableStateHolder()
@@ -348,6 +356,8 @@ private fun MobileSettingsScreen(
                     onTraktClick = { onPageChange(SettingsPage.TraktAuthentication) },
                     onSupportersContributorsClick = onSupportersContributorsClick,
                     onCheckForUpdatesClick = onCheckForUpdatesClick,
+                    nightlyUpdateModeEnabled = nightlyUpdateModeEnabled,
+                    onNightlyUpdateModeChange = onNightlyUpdateModeChange,
                     onDownloadsClick = onDownloadsClick,
                     onAccountClick = onAccountClick,
                     onSwitchProfileClick = onSwitchProfile,
@@ -496,6 +506,8 @@ private fun TabletSettingsScreen(
     onDownloadsClick: () -> Unit = {},
     onSupportersContributorsClick: () -> Unit = {},
     onCheckForUpdatesClick: (() -> Unit)? = null,
+    nightlyUpdateModeEnabled: Boolean = false,
+    onNightlyUpdateModeChange: ((Boolean) -> Unit)? = null,
     onCollectionsClick: () -> Unit = {},
 ) {
     var selectedCategory by rememberSaveable { mutableStateOf(SettingsCategory.General.name) }
@@ -595,6 +607,8 @@ private fun TabletSettingsScreen(
                         onTraktClick = { openInlinePage(SettingsPage.TraktAuthentication) },
                         onSupportersContributorsClick = { openInlinePage(SettingsPage.SupportersContributors) },
                         onCheckForUpdatesClick = onCheckForUpdatesClick,
+                        nightlyUpdateModeEnabled = nightlyUpdateModeEnabled,
+                        onNightlyUpdateModeChange = onNightlyUpdateModeChange,
                         onDownloadsClick = onDownloadsClick,
                         onAccountClick = { openInlinePage(SettingsPage.Account) },
                         onSwitchProfileClick = onSwitchProfile,

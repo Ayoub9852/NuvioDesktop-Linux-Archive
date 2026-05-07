@@ -501,6 +501,7 @@ private fun MainAppContent(
 ) {
         val navController = rememberNavController()
         val appUpdaterController = rememberAppUpdaterController()
+        val appUpdaterState by appUpdaterController.uiState.collectAsStateWithLifecycle()
         remember {
             EpisodeReleaseNotificationsRepository.ensureLoaded()
         }
@@ -1080,6 +1081,12 @@ private fun MainAppContent(
                                                     showNoUpdateFeedback = true,
                                                 )
                                             }
+                                        } else {
+                                            null
+                                        },
+                                        nightlyUpdateModeEnabled = appUpdaterState.nightlyBuildModeEnabled,
+                                        onNightlyUpdateModeChange = if (AppFeaturePolicy.inAppUpdaterEnabled) {
+                                            appUpdaterController::setNightlyBuildMode
                                         } else {
                                             null
                                         },
@@ -1982,6 +1989,8 @@ private fun AppTabHost(
     onAccountSettingsClick: () -> Unit = {},
     onSupportersContributorsSettingsClick: () -> Unit = {},
     onCheckForUpdatesClick: (() -> Unit)? = null,
+    nightlyUpdateModeEnabled: Boolean = false,
+    onNightlyUpdateModeChange: ((Boolean) -> Unit)? = null,
     onCollectionsSettingsClick: () -> Unit = {},
     onFolderClick: ((collectionId: String, folderId: String) -> Unit)? = null,
     onInitialHomeContentRendered: () -> Unit = {},
@@ -2033,6 +2042,8 @@ private fun AppTabHost(
                         onAccountClick = onAccountSettingsClick,
                         onSupportersContributorsClick = onSupportersContributorsSettingsClick,
                         onCheckForUpdatesClick = onCheckForUpdatesClick,
+                        nightlyUpdateModeEnabled = nightlyUpdateModeEnabled,
+                        onNightlyUpdateModeChange = onNightlyUpdateModeChange,
                         onCollectionsClick = onCollectionsSettingsClick,
                     )
                 }

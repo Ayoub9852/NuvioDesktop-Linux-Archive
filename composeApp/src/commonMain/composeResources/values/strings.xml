@@ -389,6 +389,8 @@
     <string name="compose_settings_root_downloads_title">Downloads</string>
     <string name="compose_settings_root_general_section">GENERAL</string>
     <string name="compose_settings_root_integrations_description">Manage available integrations</string>
+    <string name="compose_settings_root_nightly_updates_description">Check the GitHub pre-release tag instead of the latest stable release.</string>
+    <string name="compose_settings_root_nightly_updates_title">Nightly build update checks</string>
     <string name="compose_settings_root_notifications_description">Manage episode release alerts and send a test notification.</string>
     <string name="compose_settings_root_switch_profile_description">Change to a different profile.</string>
     <string name="compose_settings_root_switch_profile_title">Switch Profile</string>
@@ -928,6 +930,7 @@
     <string name="action_install">Install</string>
     <string name="action_later">Later</string>
     <string name="action_no">No</string>
+    <string name="action_open_release">Open release</string>
     <string name="action_update">Update</string>
     <string name="action_yes">Yes</string>
     <string name="app_exit_message">Do you want to exit the app?</string>
@@ -1078,7 +1081,10 @@
     <string name="updates_message_no_updates">No updates found.</string>
     <string name="updates_message_ready">A new version is ready to install.</string>
     <string name="updates_not_available">In-app updates are not available on this build.</string>
+    <string name="updates_open_release_failed">Unable to open the GitHub release.</string>
     <string name="updates_preparing_download">Preparing download</string>
+    <string name="updates_release_build_line">%1$s channel • build %2$d</string>
+    <string name="updates_release_channel_line">%1$s channel</string>
     <string name="updates_release_notes">Release notes</string>
     <string name="updates_title_allow_installs">Allow installs to continue</string>
     <string name="updates_title_available">Update available</string>

@@ -53,19 +53,19 @@ import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.getString
 import org.jetbrains.compose.resources.stringResource
 
-private const val gitHubOwner = "NuvioMedia"
-private const val gitHubRepo = "NuvioMobile"
 private const val gitHubApiBase = "https://api.github.com"
-private const val releaseChannelBranch = "cmp-rewrite"
 
 data class AppUpdate(
     val tag: String,
     val title: String,
     val notes: String,
     val releaseUrl: String?,
-    val assetName: String,
-    val assetUrl: String,
+    val assetName: String?,
+    val assetUrl: String?,
     val assetSizeBytes: Long?,
+    val versionName: String?,
+    val versionCode: Int?,
+    val channelLabel: String,
 )
 
 data class AppUpdaterUiState(
@@ -78,6 +78,7 @@ data class AppUpdaterUiState(
     val showDialog: Boolean = false,
     val showUnknownSourcesDialog: Boolean = false,
     val errorMessage: String? = null,
+    val nightlyBuildModeEnabled: Boolean = AppUpdaterPlatform.getNightlyBuildMode(),
 )
 
 @Serializable
@@ -106,10 +107,15 @@ private val appUpdaterJson = Json {
 }
 
 private class NoChannelReleaseException : IllegalStateException(
-    "No cmp-rewrite release has been published yet.",
+    "No release has been published for this update channel yet.",
 )
 
-private object VersionUtils {
+internal data class ReleaseVersionInfo(
+    val versionName: String?,
+    val versionCode: Int?,
+)
+
+internal object AppUpdateVersionComparator {
     fun normalize(raw: String?): String {
         if (raw.isNullOrBlank()) return ""
         return raw.trim().removePrefix("v").removePrefix("V")
@@ -126,7 +132,33 @@ private object VersionUtils {
         return parts.takeIf { it.isNotEmpty() }
     }
 
-    fun isRemoteNewer(remote: String?, local: String?): Boolean {
+    fun parseReleaseVersion(tag: String?, title: String?, notes: String?): ReleaseVersionInfo {
+        val candidates = listOf(notes, title, tag).filterNotNull()
+        val versionName = candidates.firstNotNullOfOrNull(::findVersionName)
+        val versionCode = candidates.firstNotNullOfOrNull(::findVersionCode)
+        return ReleaseVersionInfo(versionName = versionName, versionCode = versionCode)
+    }
+
+    fun isUpdateAvailable(
+        remoteVersionName: String?,
+        remoteVersionCode: Int?,
+        remoteTag: String?,
+        localVersionName: String?,
+        localVersionCode: Int,
+    ): Boolean {
+        val remoteParts = parseVersionParts(remoteVersionName ?: remoteTag)
+        val localParts = parseVersionParts(localVersionName)
+
+        if (remoteParts != null && localParts != null) {
+            val versionComparison = compareVersionParts(remoteParts, localParts)
+            if (versionComparison != 0) return versionComparison > 0
+            if (remoteVersionCode != null) return remoteVersionCode >= localVersionCode
+        }
+
+        return isRemoteNewer(remoteTag, localVersionName)
+    }
+
+    private fun isRemoteNewer(remote: String?, local: String?): Boolean {
         val remoteParts = parseVersionParts(remote)
         val localParts = parseVersionParts(local)
 
@@ -136,24 +168,57 @@ private object VersionUtils {
             return remoteValue.isNotBlank() && localValue.isNotBlank() && remoteValue != localValue
         }
 
+        return compareVersionParts(remoteParts, localParts) > 0
+    }
+
+    private fun compareVersionParts(remoteParts: List<Int>, localParts: List<Int>): Int {
         val maxSize = maxOf(remoteParts.size, localParts.size)
         for (index in 0 until maxSize) {
             val remoteValue = remoteParts.getOrElse(index) { 0 }
             val localValue = localParts.getOrElse(index) { 0 }
-            if (remoteValue != localValue) return remoteValue > localValue
+            if (remoteValue != localValue) return remoteValue.compareTo(localValue)
         }
-        return false
+        return 0
+    }
+
+    private fun findVersionName(value: String): String? {
+        val explicit = Regex("""(?i)\b(?:version|app_version|version_name)\s*[:=]?\s*v?(\d+(?:\.\d+){1,3})\b""")
+            .find(value)
+            ?.groupValues
+            ?.getOrNull(1)
+        if (explicit != null) return explicit
+
+        return Regex("""(?i)\bv?(\d+(?:\.\d+){1,3})\b""")
+            .find(value)
+            ?.groupValues
+            ?.getOrNull(1)
+    }
+
+    private fun findVersionCode(value: String): Int? {
+        val patterns = listOf(
+            Regex("""(?i)\b(?:build|version_code|build_number|current_project_version)\s*[:=#-]?\s*(\d+)\b"""),
+            Regex("""\((\d+)\)"""),
+        )
+        return patterns.firstNotNullOfOrNull { pattern ->
+            pattern.find(value)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        }
     }
 }
 
 private object AppUpdaterRepository {
     suspend fun getLatestChannelUpdate(): Result<AppUpdate> = runCatching {
+        val nightlyMode = AppUpdaterPlatform.getNightlyBuildMode()
+        val nightlyTag = AppUpdaterPlatform.nightlyReleaseTag?.takeIf { it.isNotBlank() }
         val response = httpRequestRaw(
             method = "GET",
-            url = "$gitHubApiBase/repos/$gitHubOwner/$gitHubRepo/releases?per_page=20",
+            url = if (nightlyMode && nightlyTag != null) {
+                "$gitHubApiBase/repos/${AppUpdaterPlatform.gitHubOwner}/${AppUpdaterPlatform.gitHubRepo}/releases/tags/$nightlyTag"
+            } else {
+                "$gitHubApiBase/repos/${AppUpdaterPlatform.gitHubOwner}/${AppUpdaterPlatform.gitHubRepo}/releases?per_page=20"
+            },
             headers = mapOf(
                 "Accept" to "application/vnd.github+json",
-                "User-Agent" to "NuvioMobile",
+                "User-Agent" to "Nuvio",
             ),
             body = "",
         )
@@ -161,30 +226,47 @@ private object AppUpdaterRepository {
             error("GitHub releases API error: ${response.status}")
         }
 
-        val releases = appUpdaterJson.decodeFromString<List<GitHubReleaseDto>>(response.body)
-        val release = releases.firstOrNull { it.matchesRequestedChannel() && !it.draft && !it.prerelease }
+        val release = if (nightlyMode && nightlyTag != null) {
+            appUpdaterJson.decodeFromString<GitHubReleaseDto>(response.body)
+                .takeIf { !it.draft }
+        } else {
+            val releases = appUpdaterJson.decodeFromString<List<GitHubReleaseDto>>(response.body)
+            releases.firstOrNull { it.matchesRequestedChannel() && !it.draft && !it.prerelease }
+        }
             ?: throw NoChannelReleaseException()
 
         val tag = release.tagName?.takeIf { it.isNotBlank() }
             ?: release.name?.takeIf { it.isNotBlank() }
             ?: error("Release has no tag or name")
 
-        val asset = chooseBestApkAsset(release.assets)
-            ?: error("No APK asset found in the cmp-rewrite release")
+        val asset = if (AppUpdaterPlatform.supportsDownloadAndInstall) {
+            chooseBestApkAsset(release.assets)
+                ?: error("No APK asset found in the release")
+        } else {
+            chooseBestDesktopAsset(release.assets)
+        }
+        val releaseVersion = AppUpdateVersionComparator.parseReleaseVersion(
+            tag = release.tagName,
+            title = release.name,
+            notes = release.body,
+        )
 
         AppUpdate(
             tag = tag,
             title = release.name?.takeIf { it.isNotBlank() } ?: tag,
             notes = release.body.orEmpty(),
             releaseUrl = release.htmlUrl,
-            assetName = asset.name,
-            assetUrl = asset.browserDownloadUrl,
-            assetSizeBytes = asset.size,
+            assetName = asset?.name,
+            assetUrl = asset?.browserDownloadUrl,
+            assetSizeBytes = asset?.size,
+            versionName = releaseVersion.versionName,
+            versionCode = releaseVersion.versionCode,
+            channelLabel = if (nightlyMode && nightlyTag != null) nightlyTag else "latest",
         )
     }
 
     private fun GitHubReleaseDto.matchesRequestedChannel(): Boolean {
-        val channel = releaseChannelBranch
+        val channel = AppUpdaterPlatform.stableReleaseChannelBranch ?: return true
         if (targetCommitish?.trim()?.equals(channel, ignoreCase = true) == true) {
             return true
         }
@@ -215,6 +297,13 @@ private object AppUpdaterRepository {
             name.contains("universal") || name.contains("all")
         } ?: apkAssets.first()
     }
+
+    private fun chooseBestDesktopAsset(assets: List<GitHubAssetDto>): GitHubAssetDto? {
+        val preferredExtensions = listOf(".exe", ".msi", ".zip")
+        return preferredExtensions.firstNotNullOfOrNull { extension ->
+            assets.firstOrNull { asset -> asset.name.endsWith(extension, ignoreCase = true) }
+        } ?: assets.firstOrNull()
+    }
 }
 
 class AppUpdaterController internal constructor(
@@ -226,7 +315,12 @@ class AppUpdaterController internal constructor(
     private var autoCheckStarted = false
 
     fun ensureAutoCheckStarted() {
-        if (autoCheckStarted || !AppFeaturePolicy.inAppUpdaterEnabled || !AppUpdaterPlatform.isSupported) {
+        if (
+            autoCheckStarted ||
+            !AppFeaturePolicy.inAppUpdaterEnabled ||
+            !AppUpdaterPlatform.isSupported ||
+            !AppUpdaterPlatform.supportsAutoCheck
+        ) {
             return
         }
         autoCheckStarted = true
@@ -256,7 +350,13 @@ class AppUpdaterController internal constructor(
             val result = AppUpdaterRepository.getLatestChannelUpdate()
 
             result.onSuccess { update ->
-                val remoteNewer = VersionUtils.isRemoteNewer(update.tag, AppVersionConfig.VERSION_NAME)
+                val remoteNewer = AppUpdateVersionComparator.isUpdateAvailable(
+                    remoteVersionName = update.versionName,
+                    remoteVersionCode = update.versionCode,
+                    remoteTag = update.tag,
+                    localVersionName = AppVersionConfig.VERSION_NAME,
+                    localVersionCode = AppVersionConfig.VERSION_CODE,
+                )
                 val ignored = ignoredTag != null && ignoredTag == update.tag
                 val shouldShowDialog = force || (remoteNewer && !ignored)
 
@@ -303,6 +403,20 @@ class AppUpdaterController internal constructor(
         }
     }
 
+    fun setNightlyBuildMode(enabled: Boolean) {
+        AppUpdaterPlatform.setNightlyBuildMode(enabled)
+        _uiState.update { state ->
+            state.copy(
+                nightlyBuildModeEnabled = enabled,
+                update = null,
+                isUpdateAvailable = false,
+                downloadedApkPath = null,
+                downloadProgress = null,
+                errorMessage = null,
+            )
+        }
+    }
+
     fun dismissDialog() {
         _uiState.update { state ->
             state.copy(
@@ -321,6 +435,16 @@ class AppUpdaterController internal constructor(
 
     fun downloadUpdate() {
         val update = _uiState.value.update ?: return
+        if (!AppUpdaterPlatform.supportsDownloadAndInstall) {
+            openReleasePage()
+            return
+        }
+        val assetUrl = update.assetUrl
+        val assetName = update.assetName
+        if (assetUrl == null || assetName == null) {
+            openReleasePage()
+            return
+        }
 
         scope.launch {
             _uiState.update { state ->
@@ -332,8 +456,8 @@ class AppUpdaterController internal constructor(
             }
 
             AppUpdaterPlatform.downloadApk(
-                assetUrl = update.assetUrl,
-                assetName = update.assetName,
+                assetUrl = assetUrl,
+                assetName = assetName,
             ) { downloadedBytes, totalBytes ->
                 val progress = if (totalBytes != null && totalBytes > 0L) {
                     (downloadedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
@@ -358,6 +482,20 @@ class AppUpdaterController internal constructor(
                         downloadProgress = null,
                         downloadedApkPath = null,
                         errorMessage = error.message ?: getString(Res.string.updates_download_failed),
+                        showDialog = true,
+                    )
+                }
+            }
+        }
+    }
+
+    fun openReleasePage() {
+        val releaseUrl = _uiState.value.update?.releaseUrl ?: return
+        AppUpdaterPlatform.openReleasePage(releaseUrl).onFailure { error ->
+            scope.launch {
+                _uiState.update { state ->
+                    state.copy(
+                        errorMessage = error.message ?: getString(Res.string.updates_open_release_failed),
                         showDialog = true,
                     )
                 }
@@ -500,9 +638,13 @@ fun AppUpdaterHost(
                                     color = MaterialTheme.colorScheme.onSurface,
                                     fontWeight = FontWeight.SemiBold,
                                 )
-                                val assetLine = update.assetSizeBytes?.let(::formatFileSize)?.let { size ->
-                                    stringResource(Res.string.updates_asset_line, size, update.assetName)
-                                } ?: update.assetName
+                                val assetLine = update.assetName?.let { assetName ->
+                                    update.assetSizeBytes?.let(::formatFileSize)?.let { size ->
+                                        stringResource(Res.string.updates_asset_line, size, assetName)
+                                    } ?: assetName
+                                } ?: update.versionCode?.let { build ->
+                                    stringResource(Res.string.updates_release_build_line, update.channelLabel, build)
+                                } ?: stringResource(Res.string.updates_release_channel_line, update.channelLabel)
                                 Text(
                                     text = assetLine,
                                     style = MaterialTheme.typography.bodySmall,
@@ -568,6 +710,7 @@ fun AppUpdaterHost(
                                 when {
                                     state.showUnknownSourcesDialog -> controller.resumeInstallation()
                                     state.downloadedApkPath != null -> controller.installDownloadedUpdate()
+                                    !AppUpdaterPlatform.supportsDownloadAndInstall -> controller.openReleasePage()
                                     else -> controller.downloadUpdate()
                                 }
                             },
@@ -582,6 +725,7 @@ fun AppUpdaterHost(
                                     state.showUnknownSourcesDialog -> stringResource(Res.string.action_continue)
                                     state.downloadedApkPath != null -> stringResource(Res.string.action_install)
                                     state.isDownloading -> stringResource(Res.string.updates_message_downloading)
+                                    !AppUpdaterPlatform.supportsDownloadAndInstall -> stringResource(Res.string.action_open_release)
                                     else -> stringResource(Res.string.action_update)
                                 },
                             )

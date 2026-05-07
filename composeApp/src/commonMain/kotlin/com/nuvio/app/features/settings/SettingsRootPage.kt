@@ -38,6 +38,8 @@ import nuvio.composeapp.generated.resources.compose_settings_root_downloads_desc
 import nuvio.composeapp.generated.resources.compose_settings_root_downloads_title
 import nuvio.composeapp.generated.resources.compose_settings_root_general_section
 import nuvio.composeapp.generated.resources.compose_settings_root_integrations_description
+import nuvio.composeapp.generated.resources.compose_settings_root_nightly_updates_description
+import nuvio.composeapp.generated.resources.compose_settings_root_nightly_updates_title
 import nuvio.composeapp.generated.resources.compose_settings_root_notifications_description
 import nuvio.composeapp.generated.resources.compose_settings_root_switch_profile_description
 import nuvio.composeapp.generated.resources.compose_settings_root_switch_profile_title
@@ -60,6 +62,8 @@ internal fun LazyListScope.settingsRootContent(
     onTraktClick: () -> Unit,
     onSupportersContributorsClick: () -> Unit,
     onCheckForUpdatesClick: (() -> Unit)? = null,
+    nightlyUpdateModeEnabled: Boolean = false,
+    onNightlyUpdateModeChange: ((Boolean) -> Unit)? = null,
     onDownloadsClick: () -> Unit,
     onAccountClick: () -> Unit,
     onSwitchProfileClick: (() -> Unit)? = null,
@@ -183,6 +187,16 @@ internal fun LazyListScope.settingsRootContent(
                             icon = Icons.Rounded.CloudDownload,
                             isTablet = isTablet,
                             onClick = onCheckForUpdatesClick,
+                        )
+                    }
+                    if (onNightlyUpdateModeChange != null) {
+                        SettingsGroupDivider(isTablet = isTablet)
+                        SettingsSwitchRow(
+                            title = stringResource(Res.string.compose_settings_root_nightly_updates_title),
+                            description = stringResource(Res.string.compose_settings_root_nightly_updates_description),
+                            checked = nightlyUpdateModeEnabled,
+                            isTablet = isTablet,
+                            onCheckedChange = onNightlyUpdateModeChange,
                         )
                     }
                 }
