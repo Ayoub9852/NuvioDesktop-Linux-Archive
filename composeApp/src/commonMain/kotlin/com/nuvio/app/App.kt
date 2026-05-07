@@ -126,6 +126,7 @@ import com.nuvio.app.features.library.toLibraryItem
 import com.nuvio.app.features.notifications.EpisodeReleaseNotificationsRepository
 import com.nuvio.app.features.player.PlayerLaunch
 import com.nuvio.app.features.player.PlayerLaunchStore
+import com.nuvio.app.features.player.ManageFullscreenKeyboardShortcuts
 import com.nuvio.app.features.player.PlayerRoute
 import com.nuvio.app.features.player.PlayerScreen
 import com.nuvio.app.features.player.sanitizePlaybackHeaders
@@ -515,6 +516,10 @@ private fun MainAppContent(
         val hapticFeedback = LocalHapticFeedback.current
         val coroutineScope = rememberCoroutineScope()
         var selectedTab by rememberSaveable { mutableStateOf(AppScreenTab.Home) }
+        val currentBackStackEntry by navController.currentBackStackEntryAsState()
+        val isHomeRouteActive = selectedTab == AppScreenTab.Home &&
+            currentBackStackEntry?.destination?.hasRoute<TabsRoute>() == true
+        ManageFullscreenKeyboardShortcuts(isHomeRouteActive = isHomeRouteActive)
         val nativeRequestedTab by remember { NativeTabBridge.requestedTab }.collectAsStateWithLifecycle()
         val liquidGlassNativeTabBarEnabled by remember {
             ThemeSettingsRepository.liquidGlassNativeTabBarEnabled

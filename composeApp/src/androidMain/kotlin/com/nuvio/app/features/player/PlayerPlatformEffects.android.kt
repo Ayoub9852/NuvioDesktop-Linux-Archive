@@ -112,6 +112,9 @@ actual fun rememberPlayerFullscreenController(): PlayerFullscreenController =
         }
     }
 
+@Composable
+actual fun ManageFullscreenKeyboardShortcuts(isHomeRouteActive: Boolean) = Unit
+
 actual val usesNativePlayerChrome: Boolean = false
 
 actual val usesAnimatedPlayerChrome: Boolean = true

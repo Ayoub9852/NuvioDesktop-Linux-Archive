@@ -42,6 +42,9 @@ expect fun rememberPlayerGestureController(): PlayerGestureController?
 @Composable
 expect fun rememberPlayerFullscreenController(): PlayerFullscreenController
 
+@Composable
+expect fun ManageFullscreenKeyboardShortcuts(isHomeRouteActive: Boolean)
+
 expect val usesNativePlayerChrome: Boolean
 
 expect val usesAnimatedPlayerChrome: Boolean

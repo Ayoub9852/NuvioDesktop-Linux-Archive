@@ -9,6 +9,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.awt.ComposeWindow
@@ -34,8 +35,11 @@ import com.nuvio.app.features.streams.AddonStreamGroup
 import com.nuvio.app.features.streams.StreamItem
 import java.awt.Cursor
 import java.awt.Frame
+import java.awt.KeyEventDispatcher
+import java.awt.KeyboardFocusManager
 import java.awt.Point
 import java.awt.Toolkit
+import java.awt.event.KeyEvent
 import java.awt.image.BufferedImage
 import java.util.Locale
 import kotlinx.coroutines.delay
@@ -936,7 +940,6 @@ actual fun rememberPlayerFullscreenController(): PlayerFullscreenController {
     var isFullscreen by remember(window) {
         mutableStateOf(window?.placement == WindowPlacement.Fullscreen)
     }
-    var previousPlacement by remember(window) { mutableStateOf(WindowPlacement.Floating) }
 
     LaunchedEffect(window) {
         while (true) {
@@ -954,17 +957,71 @@ actual fun rememberPlayerFullscreenController(): PlayerFullscreenController {
 
         override fun toggleFullscreen() {
             val composeWindow = window ?: return
-            if (composeWindow.isPlayerFullscreen() || isFullscreen) {
-                composeWindow.exitPlayerFullscreen(previousPlacement)
-                isFullscreen = false
-            } else {
-                previousPlacement = composeWindow.placement.takeIf { it != WindowPlacement.Fullscreen }
-                    ?: WindowPlacement.Floating
-                composeWindow.placement = WindowPlacement.Fullscreen
-                isFullscreen = true
-            }
+            composeWindow.toggleDesktopFullscreen()
+            isFullscreen = composeWindow.isPlayerFullscreen()
         }
     }
+}
+
+@Composable
+actual fun ManageFullscreenKeyboardShortcuts(isHomeRouteActive: Boolean) {
+    val window = LocalDesktopWindow.current as? ComposeWindow
+    val currentIsHomeRouteActive by rememberUpdatedState(isHomeRouteActive)
+
+    DisposableEffect(window) {
+        val composeWindow = window ?: return@DisposableEffect onDispose {}
+        val keyboardFocusManager = KeyboardFocusManager.getCurrentKeyboardFocusManager()
+        val dispatcher = KeyEventDispatcher { event ->
+            if (event.id != KeyEvent.KEY_RELEASED) {
+                return@KeyEventDispatcher false
+            }
+
+            when (event.keyCode) {
+                KeyEvent.VK_F11 -> {
+                    composeWindow.toggleDesktopFullscreen()
+                    true
+                }
+
+                KeyEvent.VK_ESCAPE -> {
+                    if (currentIsHomeRouteActive && composeWindow.isPlayerFullscreen()) {
+                        composeWindow.exitDesktopFullscreen()
+                        true
+                    } else {
+                        false
+                    }
+                }
+
+                else -> false
+            }
+        }
+
+        keyboardFocusManager.addKeyEventDispatcher(dispatcher)
+        onDispose {
+            keyboardFocusManager.removeKeyEventDispatcher(dispatcher)
+        }
+    }
+}
+
+private object DesktopFullscreenState {
+    var previousPlacement: WindowPlacement = WindowPlacement.Floating
+}
+
+private fun ComposeWindow.toggleDesktopFullscreen() {
+    if (isPlayerFullscreen()) {
+        exitDesktopFullscreen()
+    } else {
+        enterDesktopFullscreen()
+    }
+}
+
+private fun ComposeWindow.enterDesktopFullscreen() {
+    DesktopFullscreenState.previousPlacement = placement.takeIf { it != WindowPlacement.Fullscreen }
+        ?: WindowPlacement.Floating
+    placement = WindowPlacement.Fullscreen
+}
+
+private fun ComposeWindow.exitDesktopFullscreen() {
+    exitPlayerFullscreen(DesktopFullscreenState.previousPlacement)
 }
 
 private fun ComposeWindow.isPlayerFullscreen(): Boolean {
