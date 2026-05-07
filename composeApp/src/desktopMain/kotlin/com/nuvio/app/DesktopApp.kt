@@ -2,7 +2,9 @@ package com.nuvio.app
 
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
@@ -16,6 +18,7 @@ import com.nuvio.app.core.network.SupabaseConfig
 import com.nuvio.app.desktop.DesktopSingleInstanceManager
 import com.nuvio.app.desktop.DesktopPlayerRegistry
 import com.nuvio.app.desktop.DesktopRuntimeLog
+import com.nuvio.app.desktop.DesktopUriHandler
 import com.nuvio.app.desktop.DesktopWindowStateStore
 import com.nuvio.app.desktop.WindowsUrlProtocolRegistrar
 import com.nuvio.app.desktop.WindowsNativeBootstrap
@@ -192,7 +195,11 @@ fun main(args: Array<String>) {
                 onDispose { desktopMainWindow = null }
             }
 
-            CompositionLocalProvider(LocalDesktopWindow provides window) {
+            val desktopUriHandler = remember { DesktopUriHandler() }
+            CompositionLocalProvider(
+                LocalDesktopWindow provides window,
+                LocalUriHandler provides desktopUriHandler,
+            ) {
                 App()
             }
         }

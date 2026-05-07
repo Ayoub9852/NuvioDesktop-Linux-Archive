@@ -41,3 +41,22 @@
 -dontwarn dev.chrisbanes.haze.**
 -dontwarn com.google.common.truth.**
 -dontwarn org.objectweb.asm.**
+
+# OkHttp ships optional integrations for Android, Conscrypt, BouncyCastle and
+# OpenJSSE that are runtime-probed via reflection. None of them are present on
+# the Desktop JVM classpath, so ProGuard sees missing references and fails the
+# release build. Silence those references for the Windows Desktop distribution.
+-dontwarn android.**
+-dontwarn dalvik.**
+-dontwarn org.conscrypt.**
+-dontwarn org.bouncycastle.**
+-dontwarn org.openjsse.**
+-dontwarn okhttp3.internal.platform.android.**
+-dontwarn okhttp3.internal.platform.AndroidPlatform
+-dontwarn okhttp3.internal.platform.Android10Platform
+-dontwarn okhttp3.internal.platform.ConscryptPlatform
+-dontwarn okhttp3.internal.platform.ConscryptPlatform$**
+-dontwarn okhttp3.internal.platform.BouncyCastlePlatform
+-dontwarn okhttp3.internal.platform.BouncyCastlePlatform$**
+-dontwarn okhttp3.internal.platform.OpenJSSEPlatform
+-dontwarn okhttp3.internal.platform.OpenJSSEPlatform$**

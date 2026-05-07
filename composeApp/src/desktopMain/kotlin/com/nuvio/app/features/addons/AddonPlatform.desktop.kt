@@ -1,10 +1,17 @@
 package com.nuvio.app.features.addons
 
 import com.nuvio.app.desktop.DesktopPreferences
-import java.net.HttpURLConnection
-import java.net.URL
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import java.util.concurrent.TimeUnit
+import kotlin.text.Charsets
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.ResponseBody
 
 internal actual object AddonStorage {
     private const val preferencesName = "nuvio_addons"
@@ -27,37 +34,32 @@ internal actual object AddonStorage {
     }
 }
 
-private const val maxRawResponseBodyChars = 1024 * 1024
+// Same OkHttp transport as Android (com.squareup.okhttp3:okhttp:4.12.0). OkHttp's
+// HttpUrl parser is permissive enough to accept characters like `|` directly in
+// the path, which is required by Stremio/Torrentio addon configuration URLs.
+// Unlike Android we don't force IPv4-first DNS (that's a workaround for Android
+// emulator/network setups) and we don't override the proxy, so Windows users
+// keep their system proxy by default.
+private val addonHttpClient = OkHttpClient.Builder()
+    .connectTimeout(60, TimeUnit.SECONDS)
+    .readTimeout(60, TimeUnit.SECONDS)
+    .writeTimeout(60, TimeUnit.SECONDS)
+    .followRedirects(true)
+    .followSslRedirects(true)
+    .build()
+
+private const val maxRawResponseBodyBytes = 1024 * 1024
 private const val truncationSuffix = "\n...[truncated]"
 
-private const val addonRequestTimeoutMs = 60_000
-
-private data class DesktopAddonHttpResponse(
-    val statusCode: Int,
-    val statusText: String,
-    val url: String,
-    val body: String,
-    val headers: Map<String, List<String>>,
-)
-
 // Stremio/Torrentio addons embed configuration in the URL path using `|` as a
-// separator. Torrentio's router requires the literal pipe — replacing it with
-// `%7C` returns 404. HttpURLConnection accepts `|` in the URL, while the
-// stricter java.net.http.HttpClient + URI.create() does not. Re-decode any
-// `%7C` to `|` here so URLs that arrived already-encoded (e.g. synced from
-// Android via Supabase or pasted from a configurator) still hit the right
+// separator. Torrentio's router requires the literal pipe — `%7C` returns 404.
+// Re-decode any `%7C` to `|` here so URLs that arrived already-encoded (e.g.
+// synced from Android via Supabase, pasted from a configurator, or persisted
+// by an older Desktop build that percent-encoded them) still hit the right
 // route on Desktop.
 private fun normalizeDesktopAddonRequestUrl(url: String): String =
     url.trim()
         .replace("%7C", "|", ignoreCase = true)
-
-// `URL(String)` is deprecated since JDK 20 in favor of `URI.create(...).toURL()`,
-// but URI is the strict RFC 3986 parser that rejects `|` (and that mismatch is
-// exactly the bug we are working around for Torrentio-style addon URLs). We
-// keep the legacy permissive parser on purpose.
-@Suppress("DEPRECATION")
-private fun openAddonRequestUrl(rawUrl: String): URL =
-    URL(normalizeDesktopAddonRequestUrl(rawUrl))
 
 private fun requestAllowsBody(method: String): Boolean =
     when (method.uppercase()) {
@@ -70,63 +72,63 @@ private fun Map<String, String>.withoutAcceptEncoding(): Map<String, String> =
         .filterNot { (key, _) -> key.equals("Accept-Encoding", ignoreCase = true) }
         .associate { (key, value) -> key to value }
 
-private suspend fun executeRequest(
-    method: String,
-    url: String,
-    headers: Map<String, String>,
-    body: String,
-): DesktopAddonHttpResponse = withContext(Dispatchers.IO) {
-    val connection = (openAddonRequestUrl(url).openConnection() as HttpURLConnection).apply {
-        requestMethod = method.uppercase()
-        connectTimeout = addonRequestTimeoutMs
-        readTimeout = addonRequestTimeoutMs
-        instanceFollowRedirects = true
+private fun Map<String, String>.getHeaderIgnoreCase(name: String): String? =
+    entries.firstOrNull { (key, _) -> key.equals(name, ignoreCase = true) }?.value
 
-        headers.withoutAcceptEncoding().forEach { (key, value) ->
-            setRequestProperty(key, value)
-        }
+private data class LimitedReadResult(
+    val bytes: ByteArray,
+    val truncated: Boolean,
+)
 
-        if (requestAllowsBody(method)) {
-            doOutput = true
-            outputStream.use { stream ->
-                stream.write(body.toByteArray(Charsets.UTF_8))
-            }
-        }
+private fun readAtMostBytes(stream: InputStream, maxBytes: Int): LimitedReadResult {
+    val out = ByteArrayOutputStream(minOf(maxBytes, 16 * 1024))
+    val buffer = ByteArray(8 * 1024)
+    var remaining = maxBytes
+    var truncated = false
+
+    while (remaining > 0) {
+        val read = stream.read(buffer, 0, minOf(buffer.size, remaining))
+        if (read <= 0) break
+        out.write(buffer, 0, read)
+        remaining -= read
     }
 
-    try {
-        val statusCode = connection.responseCode
-        val statusText = connection.responseMessage.orEmpty()
-        val responseBody = readResponseBody(connection, statusCode)
+    if (remaining == 0) {
+        truncated = stream.read() != -1
+    }
 
-        DesktopAddonHttpResponse(
-            statusCode = statusCode,
-            statusText = statusText,
-            url = connection.url.toString(),
-            body = responseBody,
-            headers = connection.headerFields
-                .filterKeys { key -> key != null }
-                .mapKeys { (key, _) -> key!!.lowercase() },
-        )
-    } finally {
-        connection.disconnect()
+    return LimitedReadResult(out.toByteArray(), truncated)
+}
+
+private fun readResponseBodyLimited(body: ResponseBody?): String {
+    if (body == null) return ""
+    val charset = body.contentType()?.charset(Charsets.UTF_8) ?: Charsets.UTF_8
+    val readResult = body.byteStream().use { stream ->
+        readAtMostBytes(stream, maxRawResponseBodyBytes)
+    }
+
+    val decoded = try {
+        String(readResult.bytes, charset)
+    } catch (_: Exception) {
+        String(readResult.bytes, Charsets.UTF_8)
+    }
+
+    return if (readResult.truncated) {
+        decoded + truncationSuffix
+    } else {
+        decoded
     }
 }
 
-private fun readResponseBody(
-    connection: HttpURLConnection,
-    statusCode: Int,
-): String {
-    val stream = if (statusCode in 200..299) {
-        runCatching { connection.inputStream }.getOrNull()
-    } else {
-        connection.errorStream ?: runCatching { connection.inputStream }.getOrNull()
+private fun readResponseBody(body: ResponseBody?): String {
+    if (body == null) return ""
+    val bytes = body.bytes()
+    return runCatching {
+        val charset = body.contentType()?.charset(Charsets.UTF_8) ?: Charsets.UTF_8
+        String(bytes, charset)
+    }.getOrElse {
+        String(bytes, Charsets.UTF_8)
     }
-
-    return stream
-        ?.bufferedReader(Charsets.UTF_8)
-        ?.use { it.readText() }
-        .orEmpty()
 }
 
 private suspend fun executeTextRequest(
@@ -134,16 +136,34 @@ private suspend fun executeTextRequest(
     url: String,
     headers: Map<String, String> = emptyMap(),
     body: String = "",
-): String {
-    val response = executeRequest(method, url, headers, body)
-    val payload = response.body
-    if (response.statusCode !in 200..299) {
-        error("Request failed with HTTP ${response.statusCode}")
+): String = withContext(Dispatchers.IO) {
+    val normalizedMethod = method.uppercase()
+    val sanitizedHeaders = headers.withoutAcceptEncoding()
+    val builder = Request.Builder().url(normalizeDesktopAddonRequestUrl(url))
+    sanitizedHeaders.forEach { (key, value) ->
+        builder.header(key, value)
     }
-    if (payload.isBlank()) {
-        throw IllegalStateException("Empty response body")
+
+    val request = if (requestAllowsBody(normalizedMethod)) {
+        val contentType = sanitizedHeaders.getHeaderIgnoreCase("Content-Type")
+            ?: if (normalizedMethod == "POST") "application/x-www-form-urlencoded" else "application/json"
+        // Preserve exact media type and avoid implicit charset rewriting used in signed APIs.
+        val requestBody = body.toByteArray(Charsets.UTF_8).toRequestBody(contentType.toMediaType())
+        builder.method(normalizedMethod, requestBody)
+    } else {
+        builder.method(normalizedMethod, null)
+    }.build()
+
+    addonHttpClient.newCall(request).execute().use { response ->
+        val payload = readResponseBody(response.body)
+        if (!response.isSuccessful) {
+            error("Request failed with HTTP ${response.code}")
+        }
+        if (payload.isBlank()) {
+            throw IllegalStateException("Empty response body")
+        }
+        payload
     }
-    return payload
 }
 
 actual suspend fun httpGetText(url: String): String =
@@ -194,21 +214,35 @@ actual suspend fun httpRequestRaw(
     url: String,
     headers: Map<String, String>,
     body: String,
-): RawHttpResponse {
-    val response = executeRequest(method, url, headers, body)
-    val payload = response.body
-    val limitedPayload = if (payload.length > maxRawResponseBodyChars) {
-        payload.take(maxRawResponseBodyChars) + truncationSuffix
-    } else {
-        payload
+): RawHttpResponse =
+    withContext(Dispatchers.IO) {
+        val normalizedMethod = method.uppercase()
+        val sanitizedHeaders = headers.withoutAcceptEncoding()
+        val builder = Request.Builder().url(normalizeDesktopAddonRequestUrl(url))
+        sanitizedHeaders.forEach { (key, value) ->
+            builder.header(key, value)
+        }
+
+        val request = if (requestAllowsBody(normalizedMethod)) {
+            val contentType = sanitizedHeaders.getHeaderIgnoreCase("Content-Type")
+                ?: if (normalizedMethod == "POST") "application/x-www-form-urlencoded" else "application/json"
+            val requestBody = body.toByteArray(Charsets.UTF_8).toRequestBody(contentType.toMediaType())
+            builder.method(normalizedMethod, requestBody)
+        } else {
+            builder.method(normalizedMethod, null)
+        }.build()
+
+        addonHttpClient.newCall(request).execute().use { response ->
+            RawHttpResponse(
+                status = response.code,
+                statusText = response.message,
+                url = response.request.url.toString(),
+                body = readResponseBodyLimited(response.body),
+                headers = response.headers.toMultimap().mapValues { (_, values) ->
+                    values.joinToString(",")
+                }.mapKeys { (name, _) ->
+                    name.lowercase()
+                },
+            )
+        }
     }
-    return RawHttpResponse(
-        status = response.statusCode,
-        statusText = response.statusText,
-        url = response.url,
-        body = limitedPayload,
-        headers = response.headers.entries.associate { (key, values) ->
-            key.lowercase() to values.joinToString(",")
-        },
-    )
-}
