@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory = $true)][string]$AppDir,
     [Parameter(Mandatory = $true)][string]$OutputDir,
     [Parameter(Mandatory = $true)][string]$AppVersion,
+    [Parameter(Mandatory = $true)][string]$AppBuild,
     [Parameter(Mandatory = $true)][string]$SetupIcon,
     [Parameter(Mandatory = $true)][string]$AppIcon,
     [Parameter(Mandatory = $true)][string]$SidebarPng
@@ -100,7 +101,7 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 OutputDir=$($OutputDir.Replace('\', '\\'))
-OutputBaseFilename=Nuvio-$AppVersion-x64
+OutputBaseFilename=Nuvio-$($AppVersion)_$($AppBuild)-x64
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern

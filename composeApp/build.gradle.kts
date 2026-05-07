@@ -666,6 +666,8 @@ val packageReleaseInnoExe = tasks.register<Exec>("packageReleaseInnoExe") {
         outputDir,
         "-AppVersion",
         releaseAppVersionName,
+        "-AppBuild",
+        releaseAppVersionCode.toString(),
         "-SetupIcon",
         setupIcon,
         "-AppIcon",

@@ -7,7 +7,7 @@ import kotlin.test.assertTrue
 
 class AppUpdateVersionComparatorTest {
     @Test
-    fun parsesVersionAndBuildFromReleaseNotes() {
+    fun parsesVersionAndBuildFromReleaseNotesHeading() {
         val version = AppUpdateVersionComparator.parseReleaseVersion(
             tag = "pre",
             title = "Pre-Release - Betas are stored in this release",
@@ -19,11 +19,52 @@ class AppUpdateVersionComparatorTest {
     }
 
     @Test
-    fun sameVersionAndEqualRemoteBuildCountsAsAvailable() {
+    fun parsesExplicitVersionAndBuildLinesFromReleaseNotes() {
+        val version = AppUpdateVersionComparator.parseReleaseVersion(
+            tag = "pre",
+            title = "Pre-Release - Betas are stored in this release",
+            notes = """
+                version=0.1.15
+                build=56
+            """.trimIndent(),
+        )
+
+        assertEquals("0.1.15", version.versionName)
+        assertEquals(56, version.versionCode)
+    }
+
+    @Test
+    fun greaterVersionAndGreaterBuildCountsAsAvailable() {
         assertTrue(
+            AppUpdateVersionComparator.isUpdateAvailable(
+                remoteVersionName = "0.1.15",
+                remoteVersionCode = 56,
+                remoteTag = "pre",
+                localVersionName = "0.1.14",
+                localVersionCode = 55,
+            ),
+        )
+    }
+
+    @Test
+    fun sameVersionAndEqualRemoteBuildDoesNotCountAsAvailable() {
+        assertFalse(
             AppUpdateVersionComparator.isUpdateAvailable(
                 remoteVersionName = "0.1.14",
                 remoteVersionCode = 55,
+                remoteTag = "pre",
+                localVersionName = "0.1.14",
+                localVersionCode = 55,
+            ),
+        )
+    }
+
+    @Test
+    fun sameVersionAndGreaterRemoteBuildCountsAsAvailable() {
+        assertTrue(
+            AppUpdateVersionComparator.isUpdateAvailable(
+                remoteVersionName = "0.1.14",
+                remoteVersionCode = 56,
                 remoteTag = "pre",
                 localVersionName = "0.1.14",
                 localVersionCode = 55,
