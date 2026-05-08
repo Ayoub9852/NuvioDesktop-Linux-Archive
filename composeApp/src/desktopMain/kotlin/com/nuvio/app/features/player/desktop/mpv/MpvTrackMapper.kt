@@ -33,6 +33,7 @@ internal fun MPVHandle.subtitleTracks(): List<SubtitleTrack> {
         val id = getMpvIntProperty("track-list/$i/id") ?: continue
         val title = getMpvStringProperty("track-list/$i/title")
         val lang = getMpvStringProperty("track-list/$i/lang").takeIf { it.isNotBlank() }
+        val forced = getMpvBooleanProperty("track-list/$i/forced") || title.contains("forced", ignoreCase = true)
         tracks.add(
             SubtitleTrack(
                 index = tracks.size,
@@ -40,6 +41,7 @@ internal fun MPVHandle.subtitleTracks(): List<SubtitleTrack> {
                 label = title.ifEmpty { lang ?: "Subtitle $id" },
                 language = lang,
                 isSelected = getMpvBooleanProperty("track-list/$i/selected"),
+                isForced = forced,
             ),
         )
     }

@@ -62,6 +62,8 @@ import nuvio.composeapp.generated.resources.settings_homescreen_visible
 import org.jetbrains.compose.resources.stringResource
 import sh.calvin.reorderable.ReorderableCollectionItemScope
 
+private val SettingsContentMaxWidth = 720.dp
+
 @Composable
 private fun SettingsCard(
     isTablet: Boolean,
@@ -237,7 +239,7 @@ internal fun SettingsNavigationRow(
             modifier = Modifier
                 .weight(1f)
                 .padding(end = 12.dp)
-                .widthIn(max = if (isTablet) 560.dp else Dp.Unspecified),
+                .widthIn(max = if (isTablet) SettingsContentMaxWidth else Dp.Unspecified),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (icon != null || iconPainter != null) {
@@ -312,7 +314,7 @@ internal fun SettingsSwitchRow(
             modifier = Modifier
                 .weight(1f)
                 .padding(end = 12.dp)
-                .widthIn(max = if (isTablet) 560.dp else Dp.Unspecified)
+                .widthIn(max = if (isTablet) SettingsContentMaxWidth else Dp.Unspecified)
                 .alpha(if (enabled) 1f else 0.55f),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
@@ -376,7 +378,7 @@ internal fun HomescreenCatalogRow(
                 modifier = Modifier
                     .weight(1f)
                     .padding(end = 12.dp)
-                    .then(if (isTablet) Modifier.widthIn(max = 560.dp) else Modifier),
+                    .then(if (isTablet) Modifier.widthIn(max = SettingsContentMaxWidth) else Modifier),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Text(

@@ -137,7 +137,7 @@ import com.nuvio.app.features.profiles.ProfileEditScreen
 import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.profiles.ProfileSelectionScreen
 import com.nuvio.app.features.profiles.ProfileSwitcherTab
-import com.nuvio.app.features.profiles.avatarStorageUrl
+import com.nuvio.app.features.profiles.profileAvatarImageUrl
 import com.nuvio.app.features.search.SearchScreen
 import com.nuvio.app.features.settings.SettingsScreen
 import com.nuvio.app.features.settings.HomescreenSettingsScreen
@@ -333,6 +333,7 @@ fun App() {
             profileState.activeProfile?.name,
             profileState.activeProfile?.avatarColorHex,
             profileState.activeProfile?.avatarId,
+            profileState.activeProfile?.avatarUrl,
             profileAvatars,
         ) {
             val activeProfile = profileState.activeProfile
@@ -342,10 +343,7 @@ fun App() {
             NativeTabBridge.publishProfileTabIcon(
                 name = activeProfile?.name,
                 avatarColorHex = activeProfile?.avatarColorHex,
-                avatarImageUrl = avatarItem
-                    ?.storagePath
-                    ?.takeIf { it.isNotBlank() }
-                    ?.let(::avatarStorageUrl),
+                avatarImageUrl = activeProfile?.let { profileAvatarImageUrl(it, avatarItem) },
                 avatarBackgroundColorHex = avatarItem?.bgColor,
             )
         }

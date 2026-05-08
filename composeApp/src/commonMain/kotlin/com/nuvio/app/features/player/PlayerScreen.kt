@@ -232,6 +232,7 @@ fun PlayerScreen(
         }
         var layoutSize by remember { mutableStateOf(IntSize.Zero) }
         var playbackSnapshot by remember { mutableStateOf(PlayerPlaybackSnapshot()) }
+        var playbackLoadGeneration by remember { mutableStateOf(0) }
         var playerController by remember { mutableStateOf<PlayerEngineController?>(null) }
         var playerControllerSourceUrl by remember { mutableStateOf<String?>(null) }
         var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -1142,6 +1143,11 @@ fun PlayerScreen(
         }
 
         LaunchedEffect(activeSourceUrl, activeSourceAudioUrl, activeSourceHeaders, activeSourceResponseHeaders) {
+            playbackLoadGeneration += 1
+            PlayerRuntimeTrace.info(
+                "loading overlay show generation=$playbackLoadGeneration " +
+                    "sourceKey=${activeSourceUrl.stableLogKey()}",
+            )
             errorMessage = null
             playerController = null
             playerControllerSourceUrl = null
@@ -1714,7 +1720,19 @@ fun PlayerScreen(
                 },
                 onSnapshot = { snapshot ->
                     playbackSnapshot = snapshot
-                    if (!snapshot.isLoading) {
+                    val snapshotGeneration = playbackLoadGeneration
+                    if (
+                        !snapshot.isLoading &&
+                        playerControllerSourceUrl == activeSourceUrl &&
+                        snapshot.indicatesReadyPlaybackFrame()
+                    ) {
+                        if (!initialLoadCompleted) {
+                            PlayerRuntimeTrace.info(
+                                "loading overlay clear generation=$snapshotGeneration " +
+                                    "sourceKey=${activeSourceUrl.stableLogKey()} " +
+                                    "reason=${snapshot.readyPlaybackReason()}",
+                            )
+                        }
                         initialLoadCompleted = true
                     }
                     if (snapshot.isEnded) {
@@ -2130,3 +2148,15 @@ private fun findPreferredSubtitleTrackIndex(
 
     return -1
 }
+
+private fun PlayerPlaybackSnapshot.indicatesReadyPlaybackFrame(): Boolean =
+    isPlaying || isEnded
+
+private fun PlayerPlaybackSnapshot.readyPlaybackReason(): String = when {
+    isPlaying -> "playing"
+    isEnded -> "ended"
+    else -> "none"
+}
+
+private fun String.stableLogKey(): String =
+    hashCode().toUInt().toString(16)

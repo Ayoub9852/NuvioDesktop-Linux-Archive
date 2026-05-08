@@ -99,6 +99,9 @@ abstract class GenerateRuntimeConfigsTask : DefaultTask() {
         val contributionsUrl = resolveRuntimeValue("CONTRIBUTIONS_URL", releaseProperties, localProperties)
         val donationsBaseUrl = resolveRuntimeValue("DONATIONS_BASE_URL", releaseProperties, localProperties)
         val donationsDonateUrl = resolveRuntimeValue("DONATIONS_DONATE_URL", releaseProperties, localProperties)
+        val contributionsExtra = resolveRuntimeValue("CONTRIBUTIONS_EXTRA", releaseProperties, localProperties)
+        val imdbRatingsApiBaseUrl = resolveRuntimeValue("IMDB_RATINGS_API_BASE_URL", releaseProperties, localProperties)
+        val imdbTapframeApiBaseUrl = resolveRuntimeValue("IMDB_TAPFRAME_API_BASE_URL", releaseProperties, localProperties)
 
         val outDir = outputDir.get().asFile
         outDir.deleteRecursively()
@@ -146,6 +149,20 @@ abstract class GenerateRuntimeConfigsTask : DefaultTask() {
             )
         }
 
+        outDir.resolve("com/nuvio/app/features/details").apply {
+            mkdirs()
+            resolve("ImdbEpisodeRatingsConfig.kt").writeText(
+                """
+                |package com.nuvio.app.features.details
+                |
+                |object ImdbEpisodeRatingsConfig {
+                |    const val IMDB_RATINGS_API_BASE_URL = "${kotlinStringLiteral(imdbRatingsApiBaseUrl)}"
+                |    const val IMDB_TAPFRAME_API_BASE_URL = "${kotlinStringLiteral(imdbTapframeApiBaseUrl)}"
+                |}
+                """.trimMargin()
+            )
+        }
+
         outDir.resolve("com/nuvio/app/core/build").apply {
             mkdirs()
             resolve("AppVersionConfig.kt").writeText(
@@ -170,6 +187,7 @@ abstract class GenerateRuntimeConfigsTask : DefaultTask() {
                 |    const val CONTRIBUTIONS_URL = "${kotlinStringLiteral(contributionsUrl)}"
                 |    const val DONATIONS_BASE_URL = "${kotlinStringLiteral(donationsBaseUrl)}"
                 |    const val DONATIONS_DONATE_URL = "${kotlinStringLiteral(donationsDonateUrl)}"
+                |    const val CONTRIBUTIONS_EXTRA = "${kotlinStringLiteral(contributionsExtra)}"
                 |}
                 """.trimMargin()
             )

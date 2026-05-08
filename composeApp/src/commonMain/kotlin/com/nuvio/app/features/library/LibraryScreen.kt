@@ -35,6 +35,11 @@ import kotlinx.coroutines.launch
 import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.stringResource
 
+private data class PendingLibraryRemoval(
+    val item: LibraryItem,
+    val traktSectionKey: String? = null,
+)
+
 @Composable
 fun LibraryScreen(
     modifier: Modifier = Modifier,
@@ -46,10 +51,16 @@ fun LibraryScreen(
         LibraryRepository.uiState
     }.collectAsStateWithLifecycle()
     val networkStatusUiState by NetworkStatusRepository.uiState.collectAsStateWithLifecycle()
-    var pendingRemovalItem by remember { mutableStateOf<LibraryItem?>(null) }
+    var pendingRemovalItem by remember { mutableStateOf<PendingLibraryRemoval?>(null) }
     var observedOfflineState by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
     val isTraktSource = uiState.sourceMode == LibrarySourceMode.TRAKT
+    val retryLibraryLoad: () -> Unit = {
+        NetworkStatusRepository.requestRefresh(force = true)
+        coroutineScope.launch {
+            LibraryRepository.pullFromServer(ProfileRepository.activeProfileId)
+        }
+    }
 
     LaunchedEffect(networkStatusUiState.condition, isTraktSource) {
         when (networkStatusUiState.condition) {
@@ -110,14 +121,7 @@ fun LibraryScreen(
                         NuvioNetworkOfflineCard(
                             condition = networkStatusUiState.condition,
                             modifier = Modifier.padding(horizontal = 16.dp),
-                            onRetry = {
-                                NetworkStatusRepository.requestRefresh(force = true)
-                                if (isTraktSource) {
-                                    coroutineScope.launch {
-                                        LibraryRepository.pullFromServer(ProfileRepository.activeProfileId)
-                                    }
-                                }
-                            },
+                            onRetry = retryLibraryLoad,
                         )
                     } else {
                         HomeEmptyStateCard(
@@ -128,6 +132,8 @@ fun LibraryScreen(
                                 stringResource(Res.string.library_load_failed)
                             },
                             message = uiState.errorMessage.orEmpty(),
+                            actionLabel = stringResource(Res.string.action_retry),
+                            onActionClick = retryLibraryLoad,
                         )
                     }
                 }
@@ -139,12 +145,7 @@ fun LibraryScreen(
                         NuvioNetworkOfflineCard(
                             condition = networkStatusUiState.condition,
                             modifier = Modifier.padding(horizontal = 16.dp),
-                            onRetry = {
-                                NetworkStatusRepository.requestRefresh(force = true)
-                                coroutineScope.launch {
-                                    LibraryRepository.pullFromServer(ProfileRepository.activeProfileId)
-                                }
-                            },
+                            onRetry = retryLibraryLoad,
                         )
                     } else {
                         HomeEmptyStateCard(
@@ -169,10 +170,11 @@ fun LibraryScreen(
                     sections = uiState.sections,
                     onPosterClick = onPosterClick,
                     onSectionViewAllClick = onSectionViewAllClick,
-                    onPosterLongClick = { item ->
-                        if (!isTraktSource) {
-                            pendingRemovalItem = item
-                        }
+                    onPosterLongClick = { item, section ->
+                        pendingRemovalItem = PendingLibraryRemoval(
+                            item = item,
+                            traktSectionKey = section.type.takeIf { isTraktSource },
+                        )
                     },
                 )
             }
@@ -182,13 +184,17 @@ fun LibraryScreen(
     NuvioStatusModal(
         title = stringResource(Res.string.library_remove_title),
         message = pendingRemovalItem?.let {
-            stringResource(Res.string.library_remove_message, it.name)
+            stringResource(Res.string.library_remove_message, it.item.name)
         }.orEmpty(),
         isVisible = pendingRemovalItem != null,
         confirmText = stringResource(Res.string.library_remove_confirm),
         dismissText = stringResource(Res.string.action_cancel),
         onConfirm = {
-            pendingRemovalItem?.id?.let(LibraryRepository::remove)
+            pendingRemovalItem?.let { pending ->
+                pending.traktSectionKey?.let { sectionKey ->
+                    LibraryRepository.removeFromTraktSection(pending.item, sectionKey)
+                } ?: LibraryRepository.remove(pending.item.id)
+            }
             pendingRemovalItem = null
         },
         onDismiss = { pendingRemovalItem = null },
@@ -199,7 +205,7 @@ private fun LazyListScope.librarySections(
     sections: List<LibrarySection>,
     onPosterClick: ((LibraryItem) -> Unit)?,
     onSectionViewAllClick: ((LibrarySection) -> Unit)?,
-    onPosterLongClick: (LibraryItem) -> Unit,
+    onPosterLongClick: (LibraryItem, LibrarySection) -> Unit,
 ) {
     items(
         items = sections,
@@ -222,7 +228,7 @@ private fun LazyListScope.librarySections(
             HomePosterCard(
                 item = item.toMetaPreview(),
                 onClick = onPosterClick?.let { { it(item) } },
-                onLongClick = { onPosterLongClick(item) },
+                onLongClick = { onPosterLongClick(item, section) },
             )
         }
     }

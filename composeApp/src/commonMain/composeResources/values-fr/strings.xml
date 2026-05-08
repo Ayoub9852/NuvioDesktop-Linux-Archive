@@ -667,7 +667,7 @@
     <string name="settings_playback_map_dv7_to_hevc_description">Utiliser Dolby Vision Profil 7 vers HEVC comme alternative pour les appareils non compatibles.</string>
     <string name="settings_playback_minutes_before_end">Minutes avant la fin</string>
     <string name="settings_playback_minutes_before_end_description">Afficher la carte de l'épisode suivant ce nombre de minutes avant la fin.</string>
-    <string name="settings_playback_minutes_value">%1$d min</string>
+    <string name="settings_playback_minutes_value">%1$s min</string>
     <string name="settings_playback_no_items_available">Aucun élément disponible</string>
     <string name="settings_playback_not_set">Non défini</string>
     <string name="settings_playback_option_default">Par défaut</string>
@@ -742,9 +742,9 @@
     <string name="settings_playback_threshold_mode_percentage">Pourcentage</string>
     <string name="settings_playback_threshold_percentage">Pourcentage de seuil</string>
     <string name="settings_playback_threshold_percentage_description">Afficher la carte de l'épisode suivant lorsque la lecture atteint ce pourcentage.</string>
-    <string name="settings_playback_threshold_percentage_value">%1$d%</string>
+    <string name="settings_playback_threshold_percentage_value">%1$s%</string>
     <string name="settings_playback_timeout_instant">Instantané</string>
-    <string name="settings_playback_timeout_seconds">%1$ds</string>
+    <string name="settings_playback_timeout_seconds">%1$ss</string>
     <string name="settings_playback_timeout_unlimited">Illimité</string>
     <string name="settings_playback_tunneled_playback">Lecture tunnelisée</string>
     <string name="settings_playback_tunneled_playback_description">Active la lecture tunnelisée pour une latence réduite dans la synchronisation audio/vidéo.</string>
@@ -1012,9 +1012,14 @@
     <string name="pin_locked_try_again">Bloqué. Réessayez dans %1$ds</string>
     <string name="profile_avatar_options_pending">Les options d'avatar apparaîtront ici une fois le catalogue chargé.</string>
     <string name="profile_avatar_selected">Avatar : %1$s</string>
+    <string name="profile_avatar_url_invalid">Saisissez une URL d'image http:// ou https:// valide.</string>
     <string name="profile_choose_avatar">Choisir un avatar</string>
     <string name="profile_choose_avatar_below">Choisissez un avatar ci-dessous.</string>
     <string name="profile_create_profile">Créer un profil</string>
+    <string name="profile_custom_avatar_selected">URL d'avatar personnalisée sélectionnée.</string>
+    <string name="profile_custom_avatar_url">URL d'avatar personnalisée</string>
+    <string name="profile_custom_avatar_url_description">Collez un lien d'image, ou laissez ce champ vide pour utiliser le catalogue d'avatars intégré.</string>
+    <string name="profile_custom_avatar_url_placeholder">https://exemple.com/avatar.png</string>
     <string name="profile_delete_confirm_message">Toutes les données de &quot;%1$s&quot; seront définitivement supprimées.</string>
     <string name="profile_delete_title">Supprimer le profil</string>
     <string name="profile_edit_add_title">Ajouter un profil</string>

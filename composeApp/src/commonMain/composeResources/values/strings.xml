@@ -667,7 +667,7 @@
     <string name="settings_playback_map_dv7_to_hevc_description">Map Dolby Vision Profile 7 to standard HEVC for devices without DV hardware support</string>
     <string name="settings_playback_minutes_before_end">Threshold Minutes</string>
     <string name="settings_playback_minutes_before_end_description">Fallback when no outro timestamp exists.</string>
-    <string name="settings_playback_minutes_value">%1$d min</string>
+    <string name="settings_playback_minutes_value">%1$s min</string>
     <string name="settings_playback_no_items_available">No items available</string>
     <string name="settings_playback_not_set">Not set</string>
     <string name="settings_playback_option_default">Default (media file)</string>
@@ -742,9 +742,9 @@
     <string name="settings_playback_threshold_mode_percentage">Percentage</string>
     <string name="settings_playback_threshold_percentage">Threshold Percentage</string>
     <string name="settings_playback_threshold_percentage_description">Fallback when no outro timestamp exists.</string>
-    <string name="settings_playback_threshold_percentage_value">%1$d%</string>
+    <string name="settings_playback_threshold_percentage_value">%1$s%</string>
     <string name="settings_playback_timeout_instant">Instant</string>
-    <string name="settings_playback_timeout_seconds">%1$ds</string>
+    <string name="settings_playback_timeout_seconds">%1$ss</string>
     <string name="settings_playback_timeout_unlimited">Unlimited</string>
     <string name="settings_playback_tunneled_playback">Tunneled Playback</string>
     <string name="settings_playback_tunneled_playback_description">Hardware-level audio/video sync. May improve playback on some Android TV devices</string>
@@ -1012,9 +1012,14 @@
     <string name="pin_locked_try_again">Locked. Try again in %1$ds</string>
     <string name="profile_avatar_options_pending">Avatar options will appear here when the catalog loads.</string>
     <string name="profile_avatar_selected">Avatar: %1$s</string>
+    <string name="profile_avatar_url_invalid">Enter a valid http:// or https:// image URL.</string>
     <string name="profile_choose_avatar">Choose an avatar</string>
     <string name="profile_choose_avatar_below">Choose an avatar below.</string>
     <string name="profile_create_profile">Create Profile</string>
+    <string name="profile_custom_avatar_selected">Custom avatar URL selected.</string>
+    <string name="profile_custom_avatar_url">Custom avatar URL</string>
+    <string name="profile_custom_avatar_url_description">Paste an image link, or leave this empty to use the built-in avatar catalog.</string>
+    <string name="profile_custom_avatar_url_placeholder">https://example.com/avatar.png</string>
     <string name="profile_delete_confirm_message">All data for &quot;%1$s&quot; will be permanently deleted.</string>
     <string name="profile_delete_title">Delete Profile</string>
     <string name="profile_edit_add_title">Add Profile</string>
