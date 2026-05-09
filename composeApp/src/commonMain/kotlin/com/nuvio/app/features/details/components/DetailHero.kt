@@ -65,8 +65,9 @@ fun DetailHero(
                             .fillMaxSize()
                             .graphicsLayer {
                                 translationY = scrollOffset * 0.5f
-                                scaleX = 1.08f
-                                scaleY = 1.08f
+                                val baseScale = if (isTablet) 1.02f else 1.05f
+                                scaleX = baseScale
+                                scaleY = baseScale
                             },
                         alignment = if (isTablet) Alignment.TopCenter else Alignment.Center,
                         contentScale = ContentScale.Crop,

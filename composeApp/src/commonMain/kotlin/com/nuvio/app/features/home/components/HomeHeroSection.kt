@@ -57,7 +57,7 @@ import org.jetbrains.compose.resources.stringResource
 import kotlin.math.abs
 
 private const val HERO_BACKGROUND_PARALLAX = 0.055f
-private const val HERO_BACKGROUND_SCALE = 1.14f
+private const val HERO_BACKGROUND_SCALE = 1.06f
 private const val HERO_CONTENT_PARALLAX = 0.18f
 private const val HERO_SCROLL_PARALLAX = 0.3f
 private const val HERO_SCROLL_DOWN_SCALE_MULTIPLIER = 0.0001f

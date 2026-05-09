@@ -28,6 +28,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -35,11 +36,16 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
+import coil3.compose.LocalPlatformContext
+import coil3.request.ImageRequest
+import coil3.size.Precision
+import coil3.size.Size
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import nuvio.composeapp.generated.resources.Res
@@ -165,6 +171,21 @@ fun NuvioPosterCard(
     val posterCardStyle = rememberPosterCardStyleUiState()
     val cardWidth = shape.cardWidth(basePosterWidthDp = posterCardStyle.widthDp)
     val cardShape = RoundedCornerShape(posterCardStyle.cornerRadiusDp.dp)
+    val platformContext = LocalPlatformContext.current
+    val density = LocalDensity.current
+    val resolvedImageUrl = remember(imageUrl) { imageUrl?.upgradeTmdbImageQuality() }
+    val resolvedBottomLeftLogoUrl = remember(bottomLeftLogoUrl) { bottomLeftLogoUrl?.upgradeTmdbImageQuality() }
+    val imageRequest = remember(resolvedImageUrl, cardWidth, shape, density) {
+        resolvedImageUrl?.let {
+            val widthPx = with(density) { cardWidth.roundToPx() }.coerceAtLeast(1)
+            val heightPx = (widthPx / shape.aspectRatio).roundToInt().coerceAtLeast(1)
+            ImageRequest.Builder(platformContext)
+                .data(it)
+                .size(Size(widthPx, heightPx))
+                .precision(Precision.EXACT)
+                .build()
+        }
+    }
     val catalogLogoOverlaySize = catalogLogoOverlaySize(
         basePosterWidthDp = posterCardStyle.widthDp,
         shape = shape,
@@ -184,9 +205,9 @@ fun NuvioPosterCard(
                 .posterCardClickable(onClick = onClick, onLongClick = onLongClick),
             contentAlignment = Alignment.Center,
         ) {
-            if (imageUrl != null) {
+            if (resolvedImageUrl != null) {
                 AsyncImage(
-                    model = imageUrl,
+                    model = imageRequest,
                     contentDescription = title,
                     modifier = Modifier.matchParentSize(),
                     contentScale = ContentScale.Crop,
@@ -203,15 +224,15 @@ fun NuvioPosterCard(
                 )
             }
 
-            if (!bottomLeftLogoUrl.isNullOrBlank() || !bottomLeftText.isNullOrBlank()) {
+            if (!resolvedBottomLeftLogoUrl.isNullOrBlank() || !bottomLeftText.isNullOrBlank()) {
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomStart)
                         .padding(horizontal = 10.dp, vertical = 10.dp),
                 ) {
-                    if (!bottomLeftLogoUrl.isNullOrBlank()) {
+                    if (!resolvedBottomLeftLogoUrl.isNullOrBlank()) {
                         AsyncImage(
-                            model = bottomLeftLogoUrl,
+                            model = resolvedBottomLeftLogoUrl,
                             contentDescription = stringResource(Res.string.poster_logo_content_description, title),
                             modifier = Modifier
                                 .width(catalogLogoOverlaySize.width)
@@ -409,4 +430,12 @@ internal fun Modifier.posterCardClickable(
             this
         }
     return withPrimaryGestures.desktopContextMenuPointer(onLongClick)
+}
+
+private fun String.upgradeTmdbImageQuality(): String {
+    if (!contains("image.tmdb.org/t/p/", ignoreCase = true)) return this
+    return replace("/w300/", "/original/")
+        .replace("/w500/", "/original/")
+        .replace("/w780/", "/original/")
+        .replace("/w1280/", "/original/")
 }

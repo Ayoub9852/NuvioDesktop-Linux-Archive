@@ -42,8 +42,8 @@ import kotlin.math.max
 private const val DefaultGifDelayCentiseconds = 10
 private const val DecodeSizeBucketPx = 32
 private const val FallbackDecodeDimensionPx = 360
-private const val MaxDecodedDimension = 768
 private const val MaxDecodedGifEntries = 3
+private const val MaxDecodedDimensionPx = 1920
 private const val MaxGifSourceBytes = 16L * 1024 * 1024
 private const val MaxDecodedGifBytes = 64L * 1024 * 1024
 private const val MaxDecodedGifBytesTotal = 128L * 1024 * 1024
@@ -165,8 +165,8 @@ internal actual fun CollectionCardRemoteImage(
             ?: FallbackDecodeDimensionPx
         val decodeTarget = remember(targetWidthPx, targetHeightPx) {
             GifDecodeTarget(
-                widthPx = targetWidthPx.roundUpToDecodeBucket().coerceIn(1, MaxDecodedDimension),
-                heightPx = targetHeightPx.roundUpToDecodeBucket().coerceIn(1, MaxDecodedDimension),
+                widthPx = targetWidthPx.roundUpToDecodeBucket().coerceIn(1, MaxDecodedDimensionPx),
+                heightPx = targetHeightPx.roundUpToDecodeBucket().coerceIn(1, MaxDecodedDimensionPx),
             )
         }
         val cacheKey = remember(imageUrl, decodeTarget) {
@@ -303,27 +303,30 @@ private fun decodeGifForCompose(
                 target.widthPx.toDouble() / baseW.toDouble(),
                 target.heightPx.toDouble() / baseH.toDouble(),
             )
-            val dimensionCapScale = MaxDecodedDimension.toDouble() / max(baseW, baseH).toDouble()
-            val scale = minOf(1.0, coverScale, dimensionCapScale)
+            val scale = minOf(1.0, coverScale)
             val canvasW = max(1, (baseW * scale).toInt())
             val canvasH = max(1, (baseH * scale).toInt())
             val approxBytes = frameCount.toLong() * canvasW.toLong() * canvasH.toLong() * 4L
             if (approxBytes > MaxDecodedGifBytes) return null
 
-            val canvas = BufferedImage(canvasW, canvasH, BufferedImage.TYPE_INT_ARGB)
-            val previousCanvas = BufferedImage(canvasW, canvasH, BufferedImage.TYPE_INT_ARGB)
+            val logicalCanvas = BufferedImage(baseW, baseH, BufferedImage.TYPE_INT_ARGB)
+            val previousLogicalCanvas = BufferedImage(baseW, baseH, BufferedImage.TYPE_INT_ARGB)
+            val outputCanvas = BufferedImage(canvasW, canvasH, BufferedImage.TYPE_INT_ARGB)
 
             val outFrames = ArrayList<ImageBitmap>(frameCount)
             val outDelays = IntArray(frameCount)
 
-            val gCanvas = canvas.createGraphics().apply {
+            val gLogicalCanvas = logicalCanvas.createGraphics().apply {
+                composite = AlphaComposite.SrcOver
+                setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
+            }
+            val gPreviousLogicalCanvas = previousLogicalCanvas.createGraphics().apply {
+                composite = AlphaComposite.Src
+            }
+            val gOutputCanvas = outputCanvas.createGraphics().apply {
                 composite = AlphaComposite.SrcOver
                 setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR)
                 setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
-            }
-
-            val gPrevious = previousCanvas.createGraphics().apply {
-                composite = AlphaComposite.Src
             }
 
             try {
@@ -337,42 +340,64 @@ private fun decodeGifForCompose(
                     val disposal = meta.disposalMethod
                     val needsRestorePrevious = disposal.equals("restoretoprevious", ignoreCase = true)
                     if (needsRestorePrevious) {
-                        gPrevious.drawImage(canvas, 0, 0, null)
+                        gPreviousLogicalCanvas.drawImage(logicalCanvas, 0, 0, null)
                     }
 
-                    val destX = (meta.left * scale).toInt()
-                    val destY = (meta.top * scale).toInt()
-                    val destW = max(1, (meta.width * scale).toInt())
-                    val destH = max(1, (meta.height * scale).toInt())
-                    gCanvas.drawImage(frame, destX, destY, destW, destH, null)
+                    val frameLeft = meta.left.coerceIn(0, baseW)
+                    val frameTop = meta.top.coerceIn(0, baseH)
+                    val frameRight = (meta.left + meta.width).coerceIn(0, baseW)
+                    val frameBottom = (meta.top + meta.height).coerceIn(0, baseH)
+                    val frameWidth = frameRight - frameLeft
+                    val frameHeight = frameBottom - frameTop
+                    if (frameWidth > 0 && frameHeight > 0) {
+                        gLogicalCanvas.drawImage(
+                            frame,
+                            frameLeft,
+                            frameTop,
+                            frameRight,
+                            frameBottom,
+                            0,
+                            0,
+                            frame.width,
+                            frame.height,
+                            null,
+                        )
+                    }
 
-                    outFrames.add(deepCopy(canvas).toComposeImageBitmap())
+                    val previousOutputComposite = gOutputCanvas.composite
+                    gOutputCanvas.composite = AlphaComposite.Clear
+                    gOutputCanvas.fillRect(0, 0, canvasW, canvasH)
+                    gOutputCanvas.composite = previousOutputComposite
+                    gOutputCanvas.drawImage(logicalCanvas, 0, 0, canvasW, canvasH, null)
+
+                    outFrames.add(deepCopy(outputCanvas).toComposeImageBitmap())
                     outDelays[i] = max(1, meta.delayCs) * 10
 
                     when {
                         disposal.equals("restoretobackgroundcolor", ignoreCase = true) -> {
-                            val clearX = destX.coerceIn(0, canvasW)
-                            val clearY = destY.coerceIn(0, canvasH)
-                            val clearW = (destX + destW).coerceAtMost(canvasW) - clearX
-                            val clearH = (destY + destH).coerceAtMost(canvasH) - clearY
+                            val clearX = frameLeft.coerceIn(0, baseW)
+                            val clearY = frameTop.coerceIn(0, baseH)
+                            val clearW = frameRight.coerceAtMost(baseW) - clearX
+                            val clearH = frameBottom.coerceAtMost(baseH) - clearY
                             if (clearW > 0 && clearH > 0) {
-                                val oldComposite = gCanvas.composite
-                                gCanvas.composite = AlphaComposite.Clear
-                                gCanvas.fillRect(clearX, clearY, clearW, clearH)
-                                gCanvas.composite = oldComposite
+                                val oldComposite = gLogicalCanvas.composite
+                                gLogicalCanvas.composite = AlphaComposite.Clear
+                                gLogicalCanvas.fillRect(clearX, clearY, clearW, clearH)
+                                gLogicalCanvas.composite = oldComposite
                             }
                         }
                         disposal.equals("restoretoprevious", ignoreCase = true) -> {
-                            val oldComposite = gCanvas.composite
-                            gCanvas.composite = AlphaComposite.Src
-                            gCanvas.drawImage(previousCanvas, 0, 0, null)
-                            gCanvas.composite = oldComposite
+                            val oldComposite = gLogicalCanvas.composite
+                            gLogicalCanvas.composite = AlphaComposite.Src
+                            gLogicalCanvas.drawImage(previousLogicalCanvas, 0, 0, null)
+                            gLogicalCanvas.composite = oldComposite
                         }
                     }
                 }
             } finally {
-                gCanvas.dispose()
-                gPrevious.dispose()
+                gLogicalCanvas.dispose()
+                gPreviousLogicalCanvas.dispose()
+                gOutputCanvas.dispose()
             }
 
             if (outFrames.isEmpty()) return null
