@@ -20,11 +20,17 @@ internal object MpvRuntimeBootstrap {
 
     private val isWindows: Boolean
         get() = System.getProperty("os.name")?.contains("Windows", ignoreCase = true) == true
+    private val isLinux: Boolean
+        get() = System.getProperty("os.name")?.contains("Linux", ignoreCase = true) == true
 
     @Volatile private var bootstrappedDirectory: String? = null
+    @Volatile private var bootstrappedLibrary: String? = null
 
     @Synchronized
     fun apply(runtime: MpvRuntimeResolution): MpvRuntimeBootstrapResult {
+        if (isLinux) {
+            return applyLinux(runtime)
+        }
         if (!isWindows) {
             return MpvRuntimeBootstrapResult(success = true, diagnostics = runtime.diagnostics)
         }
@@ -54,7 +60,7 @@ internal object MpvRuntimeBootstrap {
                 .onFailure { DesktopRuntimeLog.error("MPV runtime bootstrap SetDllDirectoryW failed dir=$normalized", it) }
         }
 
-        val mediampDll = directory.resolve("mediampv.dll")
+        val mediampDll = runtime.bridgeFile ?: directory.resolve("mediampv.dll")
         return runCatching {
             System.load(mediampDll.absolutePath)
         }.fold(
@@ -78,12 +84,80 @@ internal object MpvRuntimeBootstrap {
         )
     }
 
+    private fun applyLinux(runtime: MpvRuntimeResolution): MpvRuntimeBootstrapResult {
+        val bridgeFile = runtime.bridgeFile
+        if (bridgeFile == null || !bridgeFile.isFile) {
+            return MpvRuntimeBootstrapResult(
+                success = false,
+                diagnostics = "Linux MPV bridge unresolved. Build mediamp-mpv or install the packaged runtime. ${runtime.diagnostics}",
+            )
+        }
+        if (runtime.systemMpvFile == null || !runtime.systemMpvFile.isFile) {
+            return MpvRuntimeBootstrapResult(
+                success = false,
+                diagnostics = "Linux system libmpv unresolved. Install mpv with `sudo pacman -S mpv`. ${runtime.diagnostics}",
+            )
+        }
+
+        val normalizedLibrary = bridgeFile.absoluteFile.safePath()
+        if (bootstrappedLibrary == normalizedLibrary) {
+            return MpvRuntimeBootstrapResult(success = true, diagnostics = "already loaded lib=$normalizedLibrary")
+        }
+
+        bridgeFile.parentFile?.let(::prependNativeLibraryPaths)
+        return runCatching {
+            System.load(bridgeFile.absolutePath)
+        }.fold(
+            onSuccess = {
+                bootstrappedLibrary = normalizedLibrary
+                DesktopRuntimeLog.info(
+                    "MPV runtime bootstrap loaded bridge=$normalizedLibrary systemLibmpv=${runtime.systemMpvFile.safePath()}",
+                )
+                MpvRuntimeBootstrapResult(
+                    success = true,
+                    diagnostics = "loadedBridge=$normalizedLibrary systemLibmpv=${runtime.systemMpvFile.safePath()}",
+                )
+            },
+            onFailure = { throwable ->
+                if (throwable.message?.contains("already loaded", ignoreCase = true) == true) {
+                    bootstrappedLibrary = normalizedLibrary
+                    MpvRuntimeBootstrapResult(
+                        success = true,
+                        diagnostics = "already loaded bridge=$normalizedLibrary systemLibmpv=${runtime.systemMpvFile.safePath()}",
+                    )
+                } else {
+                    DesktopRuntimeLog.error(
+                        "MPV runtime bootstrap System.load failed bridge=$normalizedLibrary " +
+                            "systemLibmpv=${runtime.systemMpvFile.safePath()} runtime=${runtime.diagnostics}",
+                        throwable,
+                    )
+                    MpvRuntimeBootstrapResult(
+                        success = false,
+                        diagnostics = "System.load failed bridge=$normalizedLibrary " +
+                            "systemLibmpv=${runtime.systemMpvFile.safePath()} runtime=${runtime.diagnostics} " +
+                            "exception=${throwable.stackTraceToString()}",
+                        error = throwable,
+                    )
+                }
+            },
+        )
+    }
+
     private fun prependJavaLibraryPath(directory: File) {
-        val current = System.getProperty("java.library.path").orEmpty()
+        prependPropertyPath("java.library.path", directory, ignoreCase = true)
+    }
+
+    private fun prependNativeLibraryPaths(directory: File) {
+        prependPropertyPath("jna.library.path", directory, ignoreCase = false)
+        prependPropertyPath("java.library.path", directory, ignoreCase = false)
+    }
+
+    private fun prependPropertyPath(propertyName: String, directory: File, ignoreCase: Boolean) {
+        val current = System.getProperty(propertyName).orEmpty()
         val path = directory.absolutePath
         val entries = current.split(File.pathSeparatorChar).filter { it.isNotBlank() }
-        if (entries.any { File(it).absolutePath.equals(path, ignoreCase = true) }) return
-        System.setProperty("java.library.path", (listOf(path) + entries).joinToString(File.pathSeparator))
+        if (entries.any { File(it).absolutePath.equals(path, ignoreCase = ignoreCase) }) return
+        System.setProperty(propertyName, (listOf(path) + entries).joinToString(File.pathSeparator))
     }
 
     private interface Kernel32 : StdCallLibrary, Library {

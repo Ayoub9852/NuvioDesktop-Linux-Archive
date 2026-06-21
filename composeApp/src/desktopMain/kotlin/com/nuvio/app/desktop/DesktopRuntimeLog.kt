@@ -73,18 +73,41 @@ internal object DesktopRuntimeLog {
 
     fun path(): Path = logFile
 
+    fun mpvLogPath(): Path {
+        Files.createDirectories(logFile.parent)
+        return logFile.parent.resolve("mpv-${processId}.log")
+    }
+
     fun processPid(): Long = processId
 
     @Synchronized
     fun logNonDaemonThreads(tag: String, limit: Int = 40) {
-        val entries = Thread.getAllStackTraces().keys
+        val allStackTraces = Thread.getAllStackTraces()
+        val threads = allStackTraces.keys
+            .filter { it.isAlive && !it.isDaemon }
+            .sortedBy { it.name }
+        appendLine("${Instant.now()} INFO  nonDaemonThreads tag=$tag pid=$processId count=${threads.size}")
+        threads.take(limit).forEach { thread ->
+            appendLine("${Instant.now()} INFO  threadSample tag=$tag ${describeThread(thread)}")
+            allStackTraces[thread]
+                .orEmpty()
+                .take(20)
+                .forEachIndexed { index, frame ->
+                    appendLine("${Instant.now()} INFO  threadSample tag=$tag name=${thread.name} frame[$index]=$frame")
+                }
+        }
+        if (threads.size > limit) {
+            appendLine("${Instant.now()} INFO  threadSample tag=$tag truncated=${threads.size - limit}")
+        }
+    }
+
+    fun nonDaemonThreadSummary(limit: Int = 40): String {
+        val allStackTraces = Thread.getAllStackTraces()
+        return allStackTraces.keys
             .filter { it.isAlive && !it.isDaemon }
             .sortedBy { it.name }
             .take(limit)
-            .joinToString(separator = " | ") { thread ->
-                "name=${thread.name},state=${thread.state}"
-            }
-        appendLine("${Instant.now()} INFO  nonDaemonThreads tag=$tag pid=$processId count=${Thread.getAllStackTraces().keys.count { it.isAlive && !it.isDaemon }} sample=[$entries]")
+            .joinToString(separator = " | ") { describeThread(it) }
     }
 
     private fun appendLine(line: String) {
@@ -96,6 +119,9 @@ internal object DesktopRuntimeLog {
             StandardOpenOption.APPEND,
         )
     }
+
+    private fun describeThread(thread: Thread): String =
+        "name=${thread.name},class=${thread.javaClass.name},state=${thread.state},daemon=${thread.isDaemon}"
 
     private fun stackTrace(throwable: Throwable): String {
         val writer = StringWriter()

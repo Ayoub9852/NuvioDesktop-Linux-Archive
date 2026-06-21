@@ -9,6 +9,12 @@ internal data class NativeBridgeRuntimeStatus(
 
 internal object NativeBridgeRuntimeLocator {
     fun resolve(): NativeBridgeRuntimeStatus {
+        if (!isWindows()) {
+            return NativeBridgeRuntimeStatus(
+                available = false,
+                diagnostics = "Native bridge is Windows-only and is not loaded on this OS.",
+            )
+        }
         if (!devLookupEnabled()) {
             return NativeBridgeRuntimeStatus(
                 available = false,
@@ -23,6 +29,7 @@ internal object NativeBridgeRuntimeLocator {
     }
 
     internal fun loadBridgeOrNull(): WindowsDesktopMPVBridgeLib? {
+        if (!isWindows()) return null
         if (!devLookupEnabled()) return null
         return WindowsDesktopMPVBridgeLib.loadOrNull()
     }
@@ -30,4 +37,7 @@ internal object NativeBridgeRuntimeLocator {
     private fun devLookupEnabled(): Boolean =
         System.getenv("NUVIO_DEV_PLAYER_LOOKUP").equals("true", ignoreCase = true) ||
             System.getProperty("nuvio.dev.player.lookup").equals("true", ignoreCase = true)
+
+    private fun isWindows(): Boolean =
+        System.getProperty("os.name")?.contains("Windows", ignoreCase = true) == true
 }

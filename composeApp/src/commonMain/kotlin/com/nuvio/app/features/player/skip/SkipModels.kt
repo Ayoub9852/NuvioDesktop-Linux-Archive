@@ -113,13 +113,17 @@ data class AnimeSkipShow(
 
 @Serializable
 data class AnimeSkipEpisode(
+    @SerialName("id") val id: String? = null,
     @SerialName("season") val season: String? = null,
     @SerialName("number") val number: String? = null,
+    @SerialName("name") val name: String? = null,
+    @SerialName("baseDuration") val baseDuration: Double? = null,
     @SerialName("timestamps") val timestamps: List<AnimeSkipTimestamp>? = null,
 )
 
 @Serializable
 data class AnimeSkipTimestamp(
+    @SerialName("id") val id: String? = null,
     @SerialName("at") val at: Double,
     @SerialName("type") val type: AnimeSkipTimestampType,
 )

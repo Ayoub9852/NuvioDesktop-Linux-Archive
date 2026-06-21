@@ -6,6 +6,7 @@ import androidx.compose.ui.graphics.Color
 import com.nuvio.app.desktop.DesktopPlayerRegistry
 import com.nuvio.app.desktop.DesktopRuntimeLog
 import com.nuvio.app.features.player.AudioTrack
+import com.nuvio.app.features.player.PlayerAudioLevel
 import com.nuvio.app.features.player.PlayerEngineController
 import com.nuvio.app.features.player.PlayerResizeMode
 import com.nuvio.app.features.player.SubtitleStyleState
@@ -35,6 +36,9 @@ import org.openani.mediamp.features.PlaybackSpeed
 import org.openani.mediamp.mpv.MPVHandle
 import org.openani.mediamp.mpv.MpvMediampPlayer
 import org.openani.mediamp.source.UriMediaData
+import java.net.Inet4Address
+import java.net.Inet6Address
+import java.net.InetAddress
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -45,6 +49,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.EmptyCoroutineContext
 
@@ -58,8 +63,8 @@ internal class MpvDesktopPlayerBackend private constructor(
     private val runtime: MpvRuntimeResolution,
     private val player: MpvMediampPlayer,
 ) : DesktopPlayerBackend {
-    override val id: String = "windows-mpv-${System.identityHashCode(player)}"
-    override val backendName: String = "windows-mediamp-mpv"
+    override val id: String = "desktop-mpv-${System.identityHashCode(player)}"
+    override val backendName: String = "desktop-mediamp-mpv"
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val stateFlow = MutableStateFlow(
@@ -73,6 +78,9 @@ internal class MpvDesktopPlayerBackend private constructor(
     @Volatile private var stopped = false
     @Volatile private var nativeClosed = false
     @Volatile private var currentRequest: DesktopPlayerRequest? = null
+    @Volatile private var playbackProxy: MpvLocalPlaybackProxy? = null
+    @Volatile private var lastSliderVolumeLogAtMs = 0L
+    @Volatile private var lastSliderVolumeLogPercent = -1
     @Volatile private var externalSubtitleActive = false
     @Volatile private var latestSubtitleStyle = SubtitleStyleState.DEFAULT
     private val externalSubtitleRequestCounter = AtomicInteger(0)
@@ -87,7 +95,10 @@ internal class MpvDesktopPlayerBackend private constructor(
 
     init {
         observePlayerState()
-        DesktopRuntimeLog.info("MPV backend created id=$id runtime=${runtime.directory?.safePath() ?: "none"}")
+        DesktopRuntimeLog.info(
+            "MPV backend created id=$id playbackMode=embedded externalProcess=false " +
+                "runtime=${runtime.directory?.safePath() ?: "none"}",
+        )
     }
 
     override suspend fun load(request: DesktopPlayerRequest) {
@@ -99,29 +110,47 @@ internal class MpvDesktopPlayerBackend private constructor(
         currentRequest = request
         stopped = false
         stateFlow.value = stateFlow.value.copy(phase = DesktopPlayerPhase.Preparing, error = null)
+        var selectedNetworkPlan: MpvNetworkPlan? = null
         runCatching {
             val headers = request.sourceHeaders.toMutableMap()
+            val networkPlan = resolveNetworkPlan(request.sourceUrl, headers)
+            selectedNetworkPlan = networkPlan
+            applyLinuxNetworkOptions(networkPlan)
             DesktopRuntimeLog.info(
                 "MPV load start session=${request.sessionKey} source=${request.sourceUrl.redactedMediaUrl()} " +
-                    "audio=${request.sourceAudioUrl?.redactedMediaUrl() ?: "none"} headersPresent=${headers.isNotEmpty()}",
+                    "audio=${request.sourceAudioUrl?.redactedMediaUrl() ?: "none"} headersPresent=${headers.isNotEmpty()} " +
+                    "playbackMode=embedded externalProcess=false networkMode=${networkPlan.mode.logName} " +
+                    "proxyUsed=${networkPlan.proxyUsed} host=${networkPlan.host} hasIPv4=${networkPlan.hasIPv4} hasIPv6=${networkPlan.hasIPv6} " +
+                    "javaPreferIPv4=${System.getProperty("java.net.preferIPv4Stack") ?: "unset"} " +
+                    "javaPreferIPv6=${System.getProperty("java.net.preferIPv6Addresses") ?: "unset"}",
             )
             resetExternalSubtitleState("load")
-            player.setMediaData(UriMediaData(request.sourceUrl, headers))
+            player.setMediaData(UriMediaData(networkPlan.playbackUrl, networkPlan.playbackHeaders))
             request.sourceAudioUrl?.takeIf { it.isNotBlank() }?.let { audioUrl ->
                 runCatching { player.impl.command("audio-add", audioUrl, "auto") }
                     .onFailure { DesktopRuntimeLog.error("MPV audio-add failed audio=${audioUrl.redactedMediaUrl()}", it) }
             }
             setResizeMode(request.resizeMode)
             if (request.playWhenReady) {
-                player.resume()
-                runCatching { player.impl.setPropertyBoolean("pause", false) }
-                    .onFailure { DesktopRuntimeLog.error("MPV unpause after load failed", it) }
+                resumeMpv("load-playWhenReady")
             } else {
-                player.pause()
+                pauseMpv("load-pause")
             }
-            DesktopRuntimeLog.info("MPV load success session=${request.sessionKey}")
+            DesktopRuntimeLog.info("MPV load success session=${request.sessionKey} ${mpvPlaybackDiagnosticsForLog()}")
         }.onFailure { throwable ->
-            DesktopRuntimeLog.error("MPV load failed source=${request.sourceUrl.redactedMediaUrl()}", throwable)
+            val plan = selectedNetworkPlan
+            val fallbackReason = when {
+                plan == null -> "network-plan-unavailable"
+                plan.mode == MpvNetworkMode.Proxy -> "proxy-already-selected"
+                !isKnownIpMismatchFailure(throwable) -> "not-known-ip-mismatch"
+                else -> "known-ip-mismatch-proxy-fallback-not-started-for-sync-load-error"
+            }
+            DesktopRuntimeLog.error(
+                "MPV load failed source=${request.sourceUrl.redactedMediaUrl()} " +
+                    "networkMode=${plan?.mode?.logName ?: "unknown"} proxyUsed=${plan?.proxyUsed ?: false} " +
+                    "directFailureReason=${throwable.message ?: throwable::class.simpleName} fallbackReason=$fallbackReason",
+                throwable,
+            )
             fail(DesktopPlayerError.MediaLoadFailed(backendName, "MPV media load failed", throwable))
         }
     }
@@ -137,6 +166,7 @@ internal class MpvDesktopPlayerBackend private constructor(
         if (stopped) return
         stopped = true
         DesktopRuntimeLog.info("MPV releaseSoft id=$id")
+        closePlaybackProxy("releaseSoft")
         resetExternalSubtitleState("releaseSoft")
         runCatching { player.impl.setPropertyBoolean("mute", true) }
         runCatching { player.impl.command("stop") }
@@ -146,10 +176,15 @@ internal class MpvDesktopPlayerBackend private constructor(
 
     override fun close() {
         if (nativeClosed) return
+        val closeStartMs = System.currentTimeMillis()
+        DesktopRuntimeLog.info("MPV close requested id=$id")
+        runCatching { player.markClosingForShutdown("backend.close") }
+            .onFailure { DesktopRuntimeLog.error("MPV close closing flag failed id=$id", it) }
+        closePlaybackProxy("close")
         resetExternalSubtitleState("close")
         nativeClosed = true
         scope.cancel()
-        DesktopRuntimeLog.info("MPV close async id=$id")
+        DesktopRuntimeLog.info("MPV close async id=$id closingFlagSet elapsedMs=${System.currentTimeMillis() - closeStartMs}")
         val thread = Thread({
             val startMs = System.currentTimeMillis()
             runCatching { player.close() }
@@ -212,6 +247,173 @@ internal class MpvDesktopPlayerBackend private constructor(
     private fun snapshotForLog(): String =
         "state=${player.getCurrentPlaybackState()} posMs=${player.currentPositionMillis.value} durationMs=${durationMs() ?: -1}"
 
+    private fun resumeMpv(reason: String): Boolean {
+        DesktopRuntimeLog.info("MPV command play/resume reason=$reason before=${snapshotForLog()}")
+        player.resume()
+        val result = player.impl.setPropertyBoolean("pause", false)
+        DesktopRuntimeLog.info(
+            "MPV command set-property pause=false reason=$reason result=$result after=${snapshotForLog()} " +
+                mpvPlaybackDiagnosticsForLog(),
+        )
+        return result
+    }
+
+    private fun pauseMpv(reason: String): Boolean {
+        DesktopRuntimeLog.info("MPV command pause reason=$reason before=${snapshotForLog()}")
+        player.pause()
+        val result = player.impl.setPropertyBoolean("pause", true)
+        DesktopRuntimeLog.info(
+            "MPV command set-property pause=true reason=$reason result=$result after=${snapshotForLog()} " +
+                mpvPlaybackDiagnosticsForLog(),
+        )
+        return result
+    }
+
+    private fun mpvPlaybackDiagnosticsForLog(): String {
+        val handle = player.impl
+        fun stringProp(name: String): String = runCatching { handle.getPropertyString(name) }
+            .getOrElse { "error:${it.message ?: it::class.simpleName}" }
+            .ifBlank { "blank" }
+        fun boolProp(name: String): String = runCatching { handle.getPropertyBoolean(name).toString() }
+            .getOrElse { "error:${it.message ?: it::class.simpleName}" }
+        fun doubleProp(name: String): String = runCatching { handle.getPropertyDouble(name).toString() }
+            .getOrElse { "error:${it.message ?: it::class.simpleName}" }
+        return "mpvProps pause=${boolProp("pause")} " +
+            "idle-active=${boolProp("idle-active")} " +
+            "core-idle=${boolProp("core-idle")} " +
+            "playback-time=${doubleProp("playback-time")} " +
+            "duration=${doubleProp("duration")} " +
+            "eof-reached=${boolProp("eof-reached")} " +
+            "demuxer-cache-state=${stringProp("demuxer-cache-state")} " +
+            "video-params=${stringProp("video-params")} " +
+            "audio-params=${stringProp("audio-params")}"
+    }
+
+    private fun applyLinuxNetworkOptions(networkPlan: MpvNetworkPlan) {
+        if (!isLinuxDesktop()) {
+            DesktopRuntimeLog.info("MPV_NETWORK options skipped os=${System.getProperty("os.name")} mode=${networkPlan.mode.logName}")
+            return
+        }
+        if (networkPlan.mode != MpvNetworkMode.DirectIpv4 && networkPlan.mode != MpvNetworkMode.Auto) {
+            DesktopRuntimeLog.info("MPV_NETWORK options skipped mode=${networkPlan.mode.logName} proxyUsed=${networkPlan.proxyUsed}")
+            return
+        }
+        DesktopRuntimeLog.info(
+            "MPV_NETWORK option skipped name=prefer_ip value=4 reason=not-advertised-by-local-ffmpeg-help; " +
+                "test manually with mpv --msg-level=all=v --demuxer-lavf-o=prefer_ip=4",
+        )
+        val options = listOf(
+            "stream-lavf-o-set" to "local_addr=0.0.0.0",
+            "demuxer-lavf-o-set" to "local_addr=0.0.0.0",
+        )
+        options.forEach { (name, value) ->
+            val result = runCatching { player.impl.option(name, value) }
+            DesktopRuntimeLog.info(
+                "MPV_NETWORK option mode=${networkPlan.mode.logName} name=$name value=$value " +
+                    "accepted=${result.getOrNull() == true} error=${result.exceptionOrNull()?.message ?: "none"}",
+            )
+        }
+    }
+
+    private fun resolveNetworkPlan(sourceUrl: String, headers: Map<String, String>): MpvNetworkPlan {
+        closePlaybackProxy("new-load")
+        val uri = runCatching { URI(sourceUrl) }.getOrNull()
+        val scheme = uri?.scheme?.lowercase(Locale.ROOT)
+        val host = uri?.host ?: "unknown"
+        val hostAddressInfo = resolveHostAddressInfo(host)
+        val envMode = System.getenv("NUVIO_MPV_NETWORK_MODE")
+            ?: System.getProperty("nuvio.mpv.networkMode")
+            ?: System.getProperty("nuvio.mpv.network.mode")
+        val requestedMode = MpvNetworkMode.from(envMode)
+        val selectedMode = when {
+            !isLinuxDesktop() -> requestedMode.takeUnless { it == MpvNetworkMode.Auto } ?: MpvNetworkMode.DirectDefault
+            requestedMode == MpvNetworkMode.Proxy -> MpvNetworkMode.Proxy
+            requestedMode == MpvNetworkMode.DirectDefault -> MpvNetworkMode.DirectDefault
+            requestedMode == MpvNetworkMode.DirectIpv4 -> MpvNetworkMode.DirectIpv4
+            scheme == "http" || scheme == "https" -> MpvNetworkMode.DirectIpv4
+            else -> MpvNetworkMode.DirectDefault
+        }
+        DesktopRuntimeLog.info(
+            "MPV_NETWORK requested=${envMode ?: "auto"} selected=${selectedMode.logName} " +
+                "host=$host hasIPv4=${hostAddressInfo.hasIPv4} hasIPv6=${hostAddressInfo.hasIPv6} " +
+                "urlLength=${sourceUrl.length} urlHash=${sourceUrl.sha256Prefix()} " +
+                "headersPresent=${headers.isNotEmpty()} proxyEnabled=${selectedMode == MpvNetworkMode.Proxy} " +
+                "proxyUsed=${selectedMode == MpvNetworkMode.Proxy}",
+        )
+        if (selectedMode == MpvNetworkMode.Proxy) {
+            val proxy = MpvLocalPlaybackProxy.create(sourceUrl, headers)?.start()
+            if (proxy != null) {
+                playbackProxy = proxy
+                return MpvNetworkPlan(
+                    mode = selectedMode,
+                    playbackUrl = proxy.playbackUrl,
+                    playbackHeaders = emptyMap(),
+                    proxyUsed = true,
+                    host = host,
+                    hasIPv4 = hostAddressInfo.hasIPv4,
+                    hasIPv6 = hostAddressInfo.hasIPv6,
+                )
+            }
+            DesktopRuntimeLog.warn(
+                "MPV_NETWORK local proxy unavailable; falling back direct-ipv4 host=$host " +
+                    "urlLength=${sourceUrl.length} urlHash=${sourceUrl.sha256Prefix()}",
+            )
+            return MpvNetworkPlan(
+                mode = MpvNetworkMode.DirectIpv4,
+                playbackUrl = sourceUrl,
+                playbackHeaders = headers,
+                proxyUsed = false,
+                host = host,
+                hasIPv4 = hostAddressInfo.hasIPv4,
+                hasIPv6 = hostAddressInfo.hasIPv6,
+            )
+        }
+        return MpvNetworkPlan(
+            mode = selectedMode,
+            playbackUrl = sourceUrl,
+            playbackHeaders = headers,
+            proxyUsed = false,
+            host = host,
+            hasIPv4 = hostAddressInfo.hasIPv4,
+            hasIPv6 = hostAddressInfo.hasIPv6,
+        )
+    }
+
+    private fun resolveHostAddressInfo(host: String): HostAddressInfo {
+        if (host == "unknown" || host.isBlank()) return HostAddressInfo(hasIPv4 = false, hasIPv6 = false)
+        return runCatching {
+            val addresses = InetAddress.getAllByName(host)
+            HostAddressInfo(
+                hasIPv4 = addresses.any { it is Inet4Address },
+                hasIPv6 = addresses.any { it is Inet6Address },
+            )
+        }.getOrElse { throwable ->
+            DesktopRuntimeLog.warn("MPV_NETWORK host resolve failed host=$host message=${throwable.message ?: throwable::class.simpleName}")
+            HostAddressInfo(hasIPv4 = false, hasIPv6 = false)
+        }
+    }
+
+    private fun closePlaybackProxy(reason: String) {
+        val proxy = playbackProxy ?: return
+        playbackProxy = null
+        runCatching { proxy.close() }
+            .onFailure { DesktopRuntimeLog.warn("MPV_NETWORK localProxy close failed reason=$reason message=${it.message}") }
+    }
+
+    private fun shouldLogSliderVolume(percent: Int): Boolean {
+        val now = System.currentTimeMillis()
+        val previousPercent = lastSliderVolumeLogPercent
+        if (now - lastSliderVolumeLogAtMs < 750L &&
+            kotlin.math.abs(percent - previousPercent) < 10 &&
+            percent !in setOf(0, 100)
+        ) {
+            return false
+        }
+        lastSliderVolumeLogAtMs = now
+        lastSliderVolumeLogPercent = percent
+        return true
+    }
+
     private fun resetExternalSubtitleState(reason: String) {
         if (nativeClosed) return
         externalSubtitleRequestCounter.incrementAndGet()
@@ -230,19 +432,22 @@ internal class MpvDesktopPlayerBackend private constructor(
         override fun play() {
             if (!canReceiveCommands()) return
             val before = snapshotForLog()
-            val result = runCatching {
-                player.resume()
-                player.impl.setPropertyBoolean("pause", false)
-            }
-            DesktopRuntimeLog.info("MPV controller play before=$before result=${result.getOrNull()} after=${snapshotForLog()}")
+            val result = runCatching { resumeMpv("controller-play") }
+            DesktopRuntimeLog.info(
+                "MPV controller play before=$before result=${result.getOrNull()} after=${snapshotForLog()} " +
+                    mpvPlaybackDiagnosticsForLog(),
+            )
             result.onFailure { DesktopRuntimeLog.error("MPV controller play failed", it) }
         }
 
         override fun pause() {
             if (!canReceiveCommands()) return
             val before = snapshotForLog()
-            val result = runCatching { player.pause() }
-            DesktopRuntimeLog.info("MPV controller pause before=$before result=${result.getOrNull()} after=${snapshotForLog()}")
+            val result = runCatching { pauseMpv("controller-pause") }
+            DesktopRuntimeLog.info(
+                "MPV controller pause before=$before result=${result.getOrNull()} after=${snapshotForLog()} " +
+                    mpvPlaybackDiagnosticsForLog(),
+            )
             result.onFailure { DesktopRuntimeLog.error("MPV controller pause failed", it) }
         }
 
@@ -265,6 +470,104 @@ internal class MpvDesktopPlayerBackend private constructor(
             seekTo(player.currentPositionMillis.value.coerceAtLeast(0L) + offsetMs)
         }
 
+        override fun currentVolume(): PlayerAudioLevel? =
+            if (canReceiveCommands()) audioLevelForLog() else null
+
+        override fun setVolume(fraction: Float): PlayerAudioLevel? {
+            if (!canReceiveCommands()) return null
+            val targetVolume = (fraction.coerceIn(0f, 1f) * 100.0).coerceIn(0.0, 100.0)
+            val before = audioLevelForLog()
+            val volumeResult = runCatching { setMpvVolume(targetVolume, reason = "slider") }
+            val muteResult = runCatching { player.impl.setPropertyBoolean("mute", targetVolume <= 0.0) }
+            val after = audioLevelForLog()
+            val targetPercent = targetVolume.toInt()
+            if (shouldLogSliderVolume(targetPercent)) {
+                DesktopRuntimeLog.info(
+                    "MPV controller setVolume target=$targetPercent " +
+                        "volumeResult=${volumeResult.getOrNull()} muteResult=${muteResult.getOrNull()} " +
+                        "beforeMuted=${before?.isMuted} beforeVolume=${before?.fraction} " +
+                        "afterMuted=${after?.isMuted} afterVolume=${after?.fraction}",
+                )
+            }
+            volumeResult.onFailure { DesktopRuntimeLog.error("MPV controller setVolume volume failed target=$targetVolume", it) }
+            muteResult.onFailure { DesktopRuntimeLog.error("MPV controller setVolume mute failed target=$targetVolume", it) }
+            return after
+        }
+
+        override fun toggleMute(): PlayerAudioLevel? {
+            if (!canReceiveCommands()) return null
+            val beforeMuted = runCatching { player.impl.getPropertyBoolean("mute") }.getOrDefault(false)
+            val result = runCatching { player.impl.setPropertyBoolean("mute", !beforeMuted) }
+            val after = audioLevelForLog()
+            DesktopRuntimeLog.info(
+                "MPV controller toggleMute beforeMuted=$beforeMuted result=${result.getOrNull()} " +
+                    "afterMuted=${after?.isMuted} afterVolume=${after?.fraction}",
+            )
+            result.onFailure { DesktopRuntimeLog.error("MPV controller toggleMute failed", it) }
+            return after
+        }
+
+        override fun setMuted(muted: Boolean): PlayerAudioLevel? {
+            if (!canReceiveCommands()) return null
+            val result = runCatching { player.impl.setPropertyBoolean("mute", muted) }
+            val after = audioLevelForLog()
+            DesktopRuntimeLog.info(
+                "MPV controller setMuted muted=$muted result=${result.getOrNull()} " +
+                    "afterMuted=${after?.isMuted} afterVolume=${after?.fraction}",
+            )
+            result.onFailure { DesktopRuntimeLog.error("MPV controller setMuted failed muted=$muted", it) }
+            return after
+        }
+
+        override fun volumeUp(): PlayerAudioLevel? =
+            adjustVolume(delta = 5.0, reason = "volumeUp")
+
+        override fun volumeDown(): PlayerAudioLevel? =
+            adjustVolume(delta = -5.0, reason = "volumeDown")
+
+        private fun adjustVolume(delta: Double, reason: String): PlayerAudioLevel? {
+            if (!canReceiveCommands()) return null
+            val before = runCatching { player.impl.getPropertyDouble("volume") }.getOrDefault(100.0)
+            val next = (before + delta).coerceIn(0.0, 100.0)
+            val volumeResult = runCatching { setMpvVolume(next, reason = reason) }
+            val muteResult = if (next > 0.0) runCatching { player.impl.setPropertyBoolean("mute", false) } else null
+            val after = audioLevelForLog()
+            DesktopRuntimeLog.info(
+                "MPV controller $reason beforeVolume=$before targetVolume=$next " +
+                    "volumeResult=${volumeResult.getOrNull()} muteResult=${muteResult?.getOrNull()} " +
+                    "afterMuted=${after?.isMuted} afterVolume=${after?.fraction}",
+            )
+            volumeResult.onFailure { DesktopRuntimeLog.error("MPV controller $reason volume failed", it) }
+            muteResult?.onFailure { DesktopRuntimeLog.error("MPV controller $reason unmute failed", it) }
+            return after
+        }
+
+        private fun audioLevelForLog(): PlayerAudioLevel? =
+            runCatching {
+                val volume = player.impl.getPropertyDouble("volume").coerceIn(0.0, 100.0)
+                val muted = player.impl.getPropertyBoolean("mute")
+                PlayerAudioLevel(fraction = (volume / 100.0).toFloat(), isMuted = muted)
+            }.getOrNull()
+
+        private fun setMpvVolume(targetVolume: Double, reason: String): Boolean {
+            val propertyResult = player.impl.setPropertyDouble("volume", targetVolume)
+            val readback = runCatching { player.impl.getPropertyDouble("volume") }.getOrNull()
+            val needsCommandFallback = readback == null || kotlin.math.abs(readback - targetVolume) > 1.0
+            val commandResult = if (needsCommandFallback) {
+                runCatching { player.impl.command("set", "volume", targetVolume.toInt().toString()) }
+                    .getOrDefault(false)
+            } else {
+                null
+            }
+            val finalReadback = runCatching { player.impl.getPropertyDouble("volume") }.getOrNull()
+            DesktopRuntimeLog.info(
+                "MPV controller set volume reason=$reason target=${targetVolume.toInt()} " +
+                    "propertyResult=$propertyResult readback=${readback ?: "error"} " +
+                    "commandFallback=${commandResult ?: "not-needed"} finalReadback=${finalReadback ?: "error"}",
+            )
+            return propertyResult || commandResult == true
+        }
+
         override fun retry() = play()
 
         override fun setPlaybackSpeed(speed: Float) {
@@ -279,12 +582,52 @@ internal class MpvDesktopPlayerBackend private constructor(
             if (canReceiveCommands()) runCatching { player.impl.subtitleTracks() }.getOrDefault(emptyList()) else emptyList()
 
         override fun selectAudioTrack(index: Int) {
-            if (!canReceiveCommands()) return
-            val tracks = getAudioTracks()
-            if (index in tracks.indices) {
-                runCatching { player.impl.setMpvProperty("aid", tracks[index].id) }
-                    .onFailure { DesktopRuntimeLog.error("MPV selectAudioTrack failed index=$index", it) }
+            DesktopRuntimeLog.info("MPV selectAudioTrack enqueue uiIndex=$index thread=${Thread.currentThread().name}")
+            scope.launch(Dispatchers.Default) {
+                selectAudioTrackOnMpvThread(index)
             }
+        }
+
+        private fun selectAudioTrackOnMpvThread(index: Int) {
+            if (!canReceiveCommands()) {
+                DesktopRuntimeLog.warn("MPV selectAudioTrack ignored index=$index reason=closedOrStopped")
+                return
+            }
+            val tracks = getAudioTracks()
+            if (index !in tracks.indices) {
+                DesktopRuntimeLog.warn(
+                    "MPV selectAudioTrack invalid index=$index trackCount=${tracks.size} " +
+                        "aid=${player.impl.getMpvStringProperty("aid")} tracks=${player.impl.audioTrackListSummary()}",
+                )
+                return
+            }
+            val selected = tracks[index]
+            val selectedAid = selected.id.trim().takeIf { it.isNotEmpty() }
+            if (selectedAid == null) {
+                DesktopRuntimeLog.warn(
+                    "MPV selectAudioTrack missing aid uiIndex=$index label=${selected.label} " +
+                        "language=${selected.language ?: "unknown"} tracks=${player.impl.audioTrackListSummary()}",
+                )
+                return
+            }
+            val aidBefore = player.impl.getMpvStringProperty("aid").ifBlank { "blank" }
+            val trackSummary = player.impl.audioTrackListSummary()
+            DesktopRuntimeLog.info(
+                "MPV selectAudioTrack start uiIndex=$index mpvAid=$selectedAid label=${selected.label} " +
+                    "language=${selected.language ?: "unknown"} selectedBefore=${selected.isSelected} " +
+                    "aidBefore=$aidBefore command=set aid $selectedAid tracks=$trackSummary thread=${Thread.currentThread().name}",
+            )
+            val result = runCatching {
+                // Avoid setPropertyString("aid", ...): that path can crash libmpv on Linux.
+                player.impl.command("set", "aid", selectedAid)
+            }
+            val aidAfter = player.impl.getMpvStringProperty("aid").ifBlank { "blank" }
+            DesktopRuntimeLog.info(
+                "MPV selectAudioTrack done uiIndex=$index mpvAid=$selectedAid " +
+                    "command=set aid $selectedAid result=${result.getOrNull()} aidBefore=$aidBefore aidAfter=$aidAfter " +
+                    "tracksAfter=${player.impl.audioTrackListSummary()} thread=${Thread.currentThread().name}",
+            )
+            result.onFailure { DesktopRuntimeLog.error("MPV selectAudioTrack failed index=$index aid=$selectedAid", it) }
         }
 
         override fun selectSubtitleTrack(index: Int) {
@@ -600,6 +943,52 @@ private fun parseHeadersJson(headersJson: String?): Map<String, String> {
             if (key.isBlank() || content.isBlank()) null else key.trim() to content
         }.toMap()
     }.getOrDefault(emptyMap())
+}
+
+private data class MpvNetworkPlan(
+    val mode: MpvNetworkMode,
+    val playbackUrl: String,
+    val playbackHeaders: Map<String, String>,
+    val proxyUsed: Boolean,
+    val host: String,
+    val hasIPv4: Boolean,
+    val hasIPv6: Boolean,
+)
+
+private data class HostAddressInfo(
+    val hasIPv4: Boolean,
+    val hasIPv6: Boolean,
+)
+
+private enum class MpvNetworkMode(val logName: String) {
+    Auto("auto"),
+    DirectDefault("direct-default"),
+    DirectIpv4("direct-ipv4"),
+    Proxy("proxy");
+
+    companion object {
+        fun from(value: String?): MpvNetworkMode =
+            when (value?.trim()?.lowercase(Locale.ROOT)) {
+                "direct-default", "default" -> DirectDefault
+                "direct-ipv4", "ipv4" -> DirectIpv4
+                "proxy", "local-proxy" -> Proxy
+                else -> Auto
+            }
+    }
+}
+
+private fun isLinuxDesktop(): Boolean =
+    System.getProperty("os.name").orEmpty().lowercase(Locale.ROOT).contains("linux")
+
+private fun isKnownIpMismatchFailure(throwable: Throwable): Boolean {
+    val message = buildString {
+        append(throwable.message.orEmpty())
+        throwable.cause?.message?.let { append(' ').append(it) }
+    }.lowercase(Locale.ROOT)
+    return "wrong ip" in message ||
+        "ip mismatch" in message ||
+        "ip-family" in message ||
+        "ip family" in message
 }
 
 private fun Color.toMpvColorString(): String {

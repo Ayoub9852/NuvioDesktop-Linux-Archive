@@ -1,5 +1,6 @@
 package com.nuvio.app.features.home
 
+import co.touchlab.kermit.Logger
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -177,10 +178,15 @@ fun HomeScreen(
         effectiveWatchProgressEntries,
         latestCompletedBySeries,
     ) {
-        WatchingState.visibleContinueWatchingEntries(
+        val selected = WatchingState.visibleContinueWatchingEntries(
             progressEntries = effectiveWatchProgressEntries,
             latestCompletedBySeries = latestCompletedBySeries,
         )
+        continueWatchingLog.i {
+            "home visible entries totalProgress=${effectiveWatchProgressEntries.size} selectedCount=${selected.size} " +
+                "selected=${selected.joinToString(limit = 8, transform = ::watchProgressEntrySummary)}"
+        }
+        selected
     }
     val profileState by ProfileRepository.state.collectAsStateWithLifecycle()
     val activeProfileId = profileState.activeProfile?.profileIndex ?: 1
@@ -247,11 +253,16 @@ fun HomeScreen(
         cachedInProgressItems,
         effectivNextUpItems,
     ) {
-        buildHomeContinueWatchingItems(
+        val items = buildHomeContinueWatchingItems(
             visibleEntries = visibleContinueWatchingEntries,
             cachedInProgressByVideoId = cachedInProgressItems,
             nextUpItemsBySeries = effectivNextUpItems,
         )
+        continueWatchingLog.i {
+            "home loaded continue watching visibleEntries=${visibleContinueWatchingEntries.size} " +
+                "nextUp=${effectivNextUpItems.size} selected=${items.joinToString(limit = 8, transform = ::continueWatchingItemSummary)}"
+        }
+        items
     }
     val availableManifests = remember(addonsUiState.addons) {
         addonsUiState.addons.mapNotNull { addon -> addon.manifest }
@@ -594,6 +605,7 @@ fun HomeScreen(
 
 private const val HOME_CATALOG_PREVIEW_LIMIT = 18
 private const val MILLIS_PER_DAY = 24L * 60L * 60L * 1000L
+private val continueWatchingLog = Logger.withTag("CONTINUE_WATCHING")
 
 internal fun filterEntriesForTraktContinueWatchingWindow(
     entries: List<WatchProgressEntry>,
@@ -632,17 +644,18 @@ internal fun buildHomeContinueWatchingItems(
     cachedInProgressByVideoId: Map<String, ContinueWatchingItem> = emptyMap(),
     nextUpItemsBySeries: Map<String, Pair<Long, ContinueWatchingItem>>,
 ): List<ContinueWatchingItem> {
-    val inProgressSeriesIds = visibleEntries
-        .asSequence()
+    val inProgressBySeries = visibleEntries
         .filter { entry -> entry.parentMetaType.isSeriesTypeForContinueWatching() }
-        .map { entry -> entry.parentMetaId }
-        .filter(String::isNotBlank)
-        .toSet()
+        .filter { entry -> entry.parentMetaId.isNotBlank() }
+        .groupBy { entry -> entry.parentMetaId }
 
     return buildList {
         addAll(
             visibleEntries.map { entry ->
                 val liveItem = entry.toContinueWatchingItem()
+                continueWatchingLog.i {
+                    "home candidate chosen reason=in-progress ${watchProgressEntrySummary(entry)}"
+                }
                 HomeContinueWatchingCandidate(
                     lastUpdatedEpochMs = entry.lastUpdatedEpochMs,
                     item = liveItem.withFallbackMetadata(cachedInProgressByVideoId[entry.videoId]),
@@ -652,7 +665,17 @@ internal fun buildHomeContinueWatchingItems(
         )
         addAll(
             nextUpItemsBySeries.values.mapNotNull { (lastUpdatedEpochMs, item) ->
-                if (item.parentMetaId in inProgressSeriesIds) return@mapNotNull null
+                val blockers = inProgressBySeries[item.parentMetaId].orEmpty()
+                if (blockers.isNotEmpty()) {
+                    continueWatchingLog.i {
+                        "home candidate skipped reason=series-has-in-progress ${continueWatchingItemSummary(item)} " +
+                            "blockers=${blockers.joinToString(limit = 4, transform = ::watchProgressEntrySummary)}"
+                    }
+                    return@mapNotNull null
+                }
+                continueWatchingLog.i {
+                    "home candidate chosen reason=completed-next-up ${continueWatchingItemSummary(item)}"
+                }
                 HomeContinueWatchingCandidate(
                     lastUpdatedEpochMs = lastUpdatedEpochMs,
                     item = item,
@@ -669,6 +692,15 @@ internal fun buildHomeContinueWatchingItems(
         .distinctBy { candidate -> candidate.item.parentMetaId.ifBlank { candidate.item.videoId } }
         .map(HomeContinueWatchingCandidate::item)
 }
+
+private fun watchProgressEntrySummary(entry: WatchProgressEntry): String =
+    "${entry.videoId}[parent=${entry.parentMetaId},s=${entry.seasonNumber},e=${entry.episodeNumber}," +
+        "pos=${entry.lastPositionMs},dur=${entry.durationMs},pct=${entry.progressPercent ?: entry.progressFraction * 100f}," +
+        "completed=${entry.isEffectivelyCompleted},updated=${entry.lastUpdatedEpochMs},source=${entry.source}]"
+
+private fun continueWatchingItemSummary(item: ContinueWatchingItem): String =
+    "${item.videoId}[parent=${item.parentMetaId},s=${item.seasonNumber},e=${item.episodeNumber}," +
+        "progress=${item.progressFraction},nextUp=${item.isNextUp},resumeMs=${item.resumePositionMs}]"
 
 private data class CompletedSeriesCandidate(
     val content: WatchingContentRef,

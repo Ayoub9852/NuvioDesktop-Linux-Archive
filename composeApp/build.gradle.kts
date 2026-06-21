@@ -12,6 +12,8 @@ import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.TaskAction
+import org.gradle.api.tasks.bundling.Compression
+import org.gradle.api.tasks.bundling.Tar
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask
 import java.io.File
@@ -54,17 +56,32 @@ abstract class GenerateRuntimeConfigsTask : DefaultTask() {
     ): String {
         System.getenv(key)
             ?.takeIf(String::isNotBlank)
-            ?.let { return it }
+            ?.let { return normalizeRuntimeConfigValue(it) }
 
         localProperties.getProperty(key)
             ?.takeIf(String::isNotBlank)
-            ?.let { return it }
+            ?.let { return normalizeRuntimeConfigValue(it) }
 
         releaseProperties.getProperty(key)
             ?.takeIf(String::isNotBlank)
-            ?.let { return it }
+            ?.let { return normalizeRuntimeConfigValue(it) }
 
-        return defaultValue
+        return normalizeRuntimeConfigValue(defaultValue)
+    }
+
+    private fun normalizeRuntimeConfigValue(value: String): String {
+        var normalized = value.trim()
+        if (normalized.endsWith(",")) {
+            normalized = normalized.dropLast(1).trim()
+        }
+        if (normalized.length >= 2) {
+            val first = normalized.first()
+            val last = normalized.last()
+            if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
+                normalized = normalized.substring(1, normalized.length - 1).trim()
+            }
+        }
+        return normalized
     }
 
     private fun kotlinStringLiteral(value: String): String =
@@ -322,10 +339,17 @@ val iosDistributionSourceDir = if (iosDistribution == "full") {
 val iosFrameworkBundleId = "com.nuvio.media"
 val fullCommonSourceDir = project.file("src/fullCommonMain/kotlin")
 val generatedRuntimeConfigDir = layout.buildDirectory.dir("generated/runtime-config/kotlin")
+val currentHostOs = System.getProperty("os.name").lowercase()
+val isWindowsHost = currentHostOs.contains("windows")
+val isMacHost = currentHostOs.contains("mac")
+val isLinuxHost = currentHostOs.contains("linux")
 
 val generateRuntimeConfigs = tasks.register<GenerateRuntimeConfigsTask>("generateRuntimeConfigs") {
     outputDir.set(generatedRuntimeConfigDir)
-    localPropertiesFile.set(rootProject.layout.projectDirectory.file("local.properties"))
+    val localProperties = rootProject.layout.projectDirectory.file("local.properties")
+    if (localProperties.asFile.exists()) {
+        localPropertiesFile.set(localProperties)
+    }
     val releaseProperties = layout.projectDirectory.file("runtime-config/release.properties")
     if (releaseProperties.asFile.exists()) {
         releasePropertiesFile.set(releaseProperties)
@@ -473,16 +497,36 @@ compose.desktop {
         val mediampPrebuiltDir = mediampRootDir.resolve("mediamp-mpv/libmpv/lib/windows/x86_64")
         fun File.safePath(): String = absolutePath.replace("\\", "/")
 
-        jvmArgs(
-            "-Dskiko.renderApi=OPENGL",
-            "-Djava.library.path=" + listOf(
-                mediampNativeBuildDir.safePath(),
-                mediampNativeBuildDir.resolve("Debug").safePath(),
-                mediampNativeBuildDir.resolve("Release").safePath(),
-                mediampPrebuiltDir.safePath(),
-                System.getenv("NUVIO_MPV_DIR")?.let { "$it/bin" } ?: "",
-            ).filter { it.isNotEmpty() }.joinToString(System.getProperty("path.separator")),
-        )
+        val nativeLibraryPaths = buildList {
+            if (isWindowsHost) {
+                addAll(
+                    listOf(
+                        mediampNativeBuildDir.safePath(),
+                        mediampNativeBuildDir.resolve("Debug").safePath(),
+                        mediampNativeBuildDir.resolve("Release").safePath(),
+                        mediampPrebuiltDir.safePath(),
+                        System.getenv("NUVIO_MPV_DIR")?.let { "$it/bin" } ?: "",
+                    ),
+                )
+            } else {
+                add(System.getenv("NUVIO_MPV_DIR") ?: "")
+            }
+        }.filter { it.isNotEmpty() }
+
+        val desktopJvmArgs = buildList {
+            add("-Dskiko.renderApi=OPENGL")
+            if (isLinuxHost) {
+                add("-Djava.net.preferIPv4Stack=true")
+                add("-Djava.net.preferIPv6Addresses=false")
+            }
+            if (nativeLibraryPaths.isNotEmpty()) {
+                val nativeLibraryPath = nativeLibraryPaths.joinToString(System.getProperty("path.separator"))
+                add("-Djava.library.path=$nativeLibraryPath")
+                add("-Djna.library.path=$nativeLibraryPath")
+            }
+        }
+
+        jvmArgs(*desktopJvmArgs.toTypedArray())
 
         buildTypes.release.proguard {
             configurationFiles.from(project.file("desktop-proguard-rules.pro"))
@@ -492,12 +536,11 @@ compose.desktop {
             packageName = "Nuvio"
             packageVersion = releaseAppVersionName
             vendor = "Creepso"
-            modules("java.net.http")
+            modules("java.net.http", "jdk.httpserver")
 
-            val hostOs = System.getProperty("os.name").lowercase()
             when {
-                hostOs.contains("windows") -> targetFormats(TargetFormat.Exe, TargetFormat.Msi)
-                hostOs.contains("mac") -> targetFormats(TargetFormat.Dmg)
+                isWindowsHost -> targetFormats(TargetFormat.Exe, TargetFormat.Msi)
+                isMacHost -> targetFormats(TargetFormat.Dmg)
             }
 
             windows {
@@ -535,6 +578,12 @@ val packageWindowsNativeRuntime = tasks.register<Copy>("packageWindowsNativeRunt
     group = "compose desktop"
     description = "Copies MediaMP/MPV native DLLs into the Windows app image and points java.library.path at them."
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    doFirst {
+        check(isWindowsHost) {
+            "packageWindowsNativeRuntime can only run on Windows hosts."
+        }
+    }
 
     from(mediampNativeBuildDir) {
         include("*.dll")
@@ -614,11 +663,55 @@ val packageWindowsNativeRuntime = tasks.register<Copy>("packageWindowsNativeRunt
     }
 }
 
-tasks.matching { it.name == "createReleaseDistributable" }.configureEach {
-    finalizedBy(packageWindowsNativeRuntime)
+val packageLinuxMediampRuntime = tasks.register<Copy>("packageLinuxMediampRuntime") {
+    val mediampRootDir = rootProject.file("mediamp")
+    val mediampNativeBuildDir = mediampRootDir.resolve("mediamp-mpv/build-ci")
+    val bridgeLibrary = mediampNativeBuildDir.resolve("libmediampv.so")
+    val appLibDir = layout.buildDirectory.dir("compose/binaries/main-release/app/Nuvio/lib/app")
+
+    group = "compose desktop"
+    description = "Copies the Linux MediaMP bridge library into the Compose release app image."
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    doFirst {
+        check(isLinuxHost) {
+            "packageLinuxMediampRuntime can only run on Linux hosts."
+        }
+        check(bridgeLibrary.isFile) {
+            "Linux MediaMP bridge is missing at ${bridgeLibrary.absolutePath}; build mediamp-mpv first."
+        }
+    }
+
+    from(mediampNativeBuildDir) {
+        include("libmediampv.so")
+    }
+    into(appLibDir)
+
+    doLast {
+        val packagedBridge = appLibDir.get().asFile.resolve("libmediampv.so")
+        check(packagedBridge.isFile) {
+            "Linux MediaMP bridge was not copied to ${packagedBridge.absolutePath}."
+        }
+    }
+}
+
+if (isWindowsHost) {
+    tasks.matching { it.name == "createReleaseDistributable" }.configureEach {
+        finalizedBy(packageWindowsNativeRuntime)
+    }
+}
+
+if (isLinuxHost) {
+    tasks.matching { it.name == "createReleaseDistributable" }.configureEach {
+        finalizedBy(packageLinuxMediampRuntime)
+    }
 }
 
 packageWindowsNativeRuntime.configure {
+    mustRunAfter(tasks.matching { it.name == "createReleaseDistributable" })
+}
+
+packageLinuxMediampRuntime.configure {
     mustRunAfter(tasks.matching { it.name == "createReleaseDistributable" })
 }
 
@@ -638,15 +731,17 @@ val syncWindowsPackageResources = tasks.register<SyncWindowsPackageResourcesTask
     installerSetupIconIco.set(windowsInstallerSetupIconFile)
 }
 
-tasks.matching {
-    it.name == "packageReleaseDistributionForCurrentOS" ||
-        it.name == "packageReleaseExe" ||
-        it.name == "packageReleaseMsi"
-}.configureEach {
-    dependsOn("createReleaseDistributable")
-    dependsOn(packageWindowsNativeRuntime)
-    dependsOn(syncWindowsPackageResources)
-    inputs.dir(windowsPackageResourcesSource)
+if (isWindowsHost) {
+    tasks.matching {
+        it.name == "packageReleaseDistributionForCurrentOS" ||
+            it.name == "packageReleaseExe" ||
+            it.name == "packageReleaseMsi"
+    }.configureEach {
+        dependsOn("createReleaseDistributable")
+        dependsOn(packageWindowsNativeRuntime)
+        dependsOn(syncWindowsPackageResources)
+        inputs.dir(windowsPackageResourcesSource)
+    }
 }
 
 syncWindowsPackageResources.configure {
@@ -655,15 +750,66 @@ syncWindowsPackageResources.configure {
     })
 }
 
-tasks.matching { it.name == "runReleaseDistributable" }.configureEach {
-    dependsOn(packageWindowsNativeRuntime)
+if (isWindowsHost) {
+    tasks.matching { it.name == "runReleaseDistributable" }.configureEach {
+        dependsOn(packageWindowsNativeRuntime)
+    }
+}
+
+if (isLinuxHost) {
+    tasks.matching { it.name == "runReleaseDistributable" }.configureEach {
+        dependsOn("createReleaseDistributable")
+        dependsOn(packageLinuxMediampRuntime)
+    }
+}
+
+val packageReleaseArchTarGz = tasks.register<Tar>("packageReleaseArchTarGz") {
+    group = "compose desktop"
+    description = "Builds a Linux x64 tar.gz from the current-host Compose release app image for Arch users."
+
+    if (isLinuxHost) {
+        dependsOn("createReleaseDistributable")
+        dependsOn(packageLinuxMediampRuntime)
+    }
+
+    archiveBaseName.set("Nuvio-${releaseAppVersionName}-linux-x64")
+    archiveExtension.set("tar.gz")
+    compression = Compression.GZIP
+    destinationDirectory.set(layout.buildDirectory.dir("compose/binaries/main-release/arch"))
+
+    val appImageDir = layout.buildDirectory.dir("compose/binaries/main-release/app/Nuvio")
+    into("Nuvio-${releaseAppVersionName}-linux-x64")
+    from(appImageDir)
+
+    doFirst {
+        check(isLinuxHost) {
+            "packageReleaseArch can only run on Linux hosts."
+        }
+        check(appImageDir.get().asFile.isDirectory) {
+            "Linux release app image is missing; run :composeApp:createReleaseDistributable first."
+        }
+    }
+}
+
+tasks.register("packageReleaseArch") {
+    group = "compose desktop"
+    description = "Builds the Arch-friendly Linux release tar.gz."
+    dependsOn(packageReleaseArchTarGz)
 }
 
 val packageReleaseInnoExe = tasks.register<Exec>("packageReleaseInnoExe") {
     group = "compose desktop"
     description = "Builds a Windows installer with Inno Setup (no WiX), using the release app image."
-    dependsOn("createReleaseDistributable")
-    dependsOn(packageWindowsNativeRuntime)
+    if (isWindowsHost) {
+        dependsOn("createReleaseDistributable")
+        dependsOn(packageWindowsNativeRuntime)
+    }
+
+    doFirst {
+        check(isWindowsHost) {
+            "packageReleaseInnoExe can only run on Windows hosts."
+        }
+    }
 
     val appImageDir = layout.buildDirectory.dir("compose/binaries/main-release/app/Nuvio").get().asFile.absolutePath
     val outputDir = layout.buildDirectory.dir("compose/binaries/main-release/inno").get().asFile.absolutePath
@@ -699,8 +845,10 @@ val packageReleaseInnoExe = tasks.register<Exec>("packageReleaseInnoExe") {
 tasks.register<Zip>("packageReleasePortableZip") {
     group = "compose desktop"
     description = "Builds a portable Windows ZIP package (no installer, no WiX/NSIS/Inno)."
-    dependsOn("createReleaseDistributable")
-    dependsOn(packageWindowsNativeRuntime)
+    if (isWindowsHost) {
+        dependsOn("createReleaseDistributable")
+        dependsOn(packageWindowsNativeRuntime)
+    }
 
     val portableRootName = "Nuvio-${releaseAppVersionName}-portable"
     val appImageDir = layout.buildDirectory.dir("compose/binaries/main-release/app/Nuvio")
@@ -714,6 +862,9 @@ tasks.register<Zip>("packageReleasePortableZip") {
     into(portableRootName)
     from(appImageDir)
     doFirst {
+        check(isWindowsHost) {
+            "packageReleasePortableZip can only run on Windows hosts."
+        }
         val markerFile = portableMarkerFile.get().asFile
         markerFile.parentFile.mkdirs()
         markerFile.writeText("")

@@ -3,6 +3,8 @@ package com.nuvio.app.core.auth
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.network.SupabaseProvider
 import com.nuvio.app.core.storage.LocalAccountDataCleaner
+import com.nuvio.app.features.profiles.ProfilePushPayload
+import com.nuvio.app.features.profiles.ProfileRepository
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.auth.providers.builtin.Email
 import io.github.jan.supabase.auth.status.SessionStatus
@@ -109,6 +111,7 @@ object AuthRepository {
             this.email = email
             this.password = password
         }
+        verifyAuthenticatedSync()
     }.onFailure { e ->
         log.e(e) { "Email sign-in failed" }
         _error.value = e.message ?: getString(Res.string.auth_sign_in_failed)
@@ -145,6 +148,33 @@ object AuthRepository {
     private fun ensureSupabaseConfigured() {
         check(SupabaseProvider.isConfigured) {
             "Supabase anon key is missing. Set SUPABASE_ANON_KEY in local.properties and rebuild the desktop app."
+        }
+    }
+
+    private suspend fun verifyAuthenticatedSync() {
+        val user = SupabaseProvider.client.auth.retrieveUserForCurrentSession(true)
+        _state.value = AuthState.Authenticated(
+            userId = user.id,
+            email = user.email,
+            isAnonymous = false,
+        )
+
+        ProfileRepository.ensureLoaded(user.id)
+        ProfileRepository.pullProfiles()
+
+        val profileMetadata = ProfileRepository.state.value.profiles.map { profile ->
+            ProfilePushPayload(
+                profileIndex = profile.profileIndex,
+                name = profile.name,
+                avatarColorHex = profile.avatarColorHex,
+                usesPrimaryAddons = profile.usesPrimaryAddons,
+                usesPrimaryPlugins = profile.usesPrimaryPlugins,
+                avatarId = profile.avatarId,
+                avatarUrl = profile.avatarUrl,
+            )
+        }
+        if (profileMetadata.isNotEmpty()) {
+            ProfileRepository.pushProfiles(profileMetadata)
         }
     }
 }

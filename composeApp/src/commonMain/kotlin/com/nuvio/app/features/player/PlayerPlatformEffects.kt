@@ -21,6 +21,17 @@ data class PlayerAudioLevel(
     val isMuted: Boolean,
 )
 
+enum class PlayerShortcutKey {
+    Space,
+    Left,
+    Right,
+    Mute,
+    Fullscreen,
+    Escape,
+    VolumeUp,
+    VolumeDown,
+}
+
 @Composable
 expect fun LockPlayerToLandscape()
 
@@ -44,6 +55,14 @@ expect fun rememberPlayerFullscreenController(): PlayerFullscreenController
 
 @Composable
 expect fun ManageFullscreenKeyboardShortcuts(isHomeRouteActive: Boolean)
+
+@Composable
+expect fun ManagePlayerKeyboardShortcuts(
+    enabled: Boolean,
+    inputBlocked: Boolean,
+    onShortcut: (PlayerShortcutKey, Boolean) -> Boolean,
+    onRequestFocus: (String) -> Unit,
+)
 
 expect val usesNativePlayerChrome: Boolean
 

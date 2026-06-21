@@ -80,6 +80,14 @@ actual fun rememberPlayerFullscreenController(): PlayerFullscreenController =
 @Composable
 actual fun ManageFullscreenKeyboardShortcuts(isHomeRouteActive: Boolean) = Unit
 
+@Composable
+actual fun ManagePlayerKeyboardShortcuts(
+    enabled: Boolean,
+    inputBlocked: Boolean,
+    onShortcut: (PlayerShortcutKey, Boolean) -> Boolean,
+    onRequestFocus: (String) -> Unit,
+) = Unit
+
 actual val usesNativePlayerChrome: Boolean = false
 
 actual val usesAnimatedPlayerChrome: Boolean = true

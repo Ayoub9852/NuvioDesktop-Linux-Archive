@@ -3,6 +3,7 @@ package com.nuvio.app.features.player
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,14 +14,18 @@ import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeContent
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.VolumeOff
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.Flag
 import androidx.compose.material.icons.rounded.Forward10
 import androidx.compose.material.icons.rounded.Fullscreen
@@ -38,7 +43,16 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -47,6 +61,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -55,6 +71,7 @@ import com.nuvio.app.core.ui.AppIconResource
 import com.nuvio.app.core.ui.NuvioBackButton
 import com.nuvio.app.core.ui.appIconPainter
 import com.nuvio.app.core.ui.nuvioTypeScale
+import kotlinx.coroutines.delay
 import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.stringResource
 
@@ -83,6 +100,11 @@ internal fun PlayerControlsShell(
     onSpeedClick: () -> Unit,
     onSubtitleClick: () -> Unit,
     onAudioClick: () -> Unit,
+    audioLevel: PlayerAudioLevel,
+    onVolumeClick: () -> Unit,
+    onVolumeChange: (Float) -> Unit,
+    onVolumeChangeFinished: () -> Unit,
+    onVolumeInteractionChange: (Boolean) -> Unit,
     onSourcesClick: (() -> Unit)? = null,
     onEpisodesClick: (() -> Unit)? = null,
     onSubmitIntroClick: (() -> Unit)? = null,
@@ -175,6 +197,11 @@ internal fun PlayerControlsShell(
                 onSpeedClick = onSpeedClick,
                 onSubtitleClick = onSubtitleClick,
                 onAudioClick = onAudioClick,
+                audioLevel = audioLevel,
+                onVolumeClick = onVolumeClick,
+                onVolumeChange = onVolumeChange,
+                onVolumeChangeFinished = onVolumeChangeFinished,
+                onVolumeInteractionChange = onVolumeInteractionChange,
                 onSourcesClick = onSourcesClick,
                 onEpisodesClick = onEpisodesClick,
                 modifier = Modifier
@@ -456,6 +483,11 @@ private fun ProgressControls(
     onSpeedClick: () -> Unit,
     onSubtitleClick: () -> Unit,
     onAudioClick: () -> Unit,
+    audioLevel: PlayerAudioLevel,
+    onVolumeClick: () -> Unit,
+    onVolumeChange: (Float) -> Unit,
+    onVolumeChangeFinished: () -> Unit,
+    onVolumeInteractionChange: (Boolean) -> Unit,
     onSourcesClick: (() -> Unit)? = null,
     onEpisodesClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
@@ -464,8 +496,66 @@ private fun ProgressControls(
     val aspectRatioPainter = appIconPainter(AppIconResource.PlayerAspectRatio)
     val subtitlesPainter = appIconPainter(AppIconResource.PlayerSubtitles)
     val audioPainter = appIconPainter(AppIconResource.PlayerAudioFilled)
+    var volumePopoverVisible by remember { mutableStateOf(false) }
+    var volumeCloseSerial by remember { mutableIntStateOf(0) }
+    var volumePointerInside by remember { mutableStateOf(false) }
+    var volumeDragging by remember { mutableStateOf(false) }
+    val latestOnVolumeInteractionChange by rememberUpdatedState(onVolumeInteractionChange)
 
-    Column(modifier = modifier) {
+    fun openVolumePopover(reason: String) {
+        if (!volumePopoverVisible) {
+            val percentage = (audioLevel.fraction.coerceIn(0f, 1f) * 100f).toInt().coerceIn(0, 100)
+            PlayerRuntimeTrace.info(
+                "volume control opened reason=$reason value=$percentage muted=${audioLevel.isMuted} rendered=true",
+            )
+        }
+        volumePopoverVisible = true
+        latestOnVolumeInteractionChange(true)
+        volumeCloseSerial += 1
+    }
+
+    fun requestVolumeClose(reason: String) {
+        volumeCloseSerial += 1
+        PlayerRuntimeTrace.info("volume control close requested reason=$reason")
+    }
+
+    LaunchedEffect(volumeCloseSerial, volumePopoverVisible, volumeDragging, volumePointerInside) {
+        val serial = volumeCloseSerial
+        if (!volumePopoverVisible || volumeDragging || volumePointerInside) return@LaunchedEffect
+        delay(100L)
+        if (serial == volumeCloseSerial && !volumeDragging && !volumePointerInside) {
+            volumePopoverVisible = false
+            latestOnVolumeInteractionChange(false)
+            val percentage = (audioLevel.fraction.coerceIn(0f, 1f) * 100f).toInt().coerceIn(0, 100)
+            PlayerRuntimeTrace.info("volume control closed reason=delay value=$percentage muted=${audioLevel.isMuted}")
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { latestOnVolumeInteractionChange(false) }
+    }
+
+    Box(modifier = modifier) {
+        if (volumePopoverVisible) {
+            VolumeSliderPopover(
+                audioLevel = audioLevel,
+                onVolumeChange = onVolumeChange,
+                onVolumeChangeFinished = onVolumeChangeFinished,
+                onPointerInsideChange = { inside ->
+                    volumePointerInside = inside
+                    if (inside) openVolumePopover("popover-hover") else requestVolumeClose("popover-exit")
+                },
+                onDraggingChange = { dragging ->
+                    volumeDragging = dragging
+                    latestOnVolumeInteractionChange(dragging || volumePopoverVisible)
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .offset(y = (-46).dp),
+            )
+        }
+
+        Column(modifier = Modifier.fillMaxWidth()) {
         Slider(
             modifier = Modifier
                 .fillMaxWidth()
@@ -520,6 +610,16 @@ private fun ProgressControls(
                         painter = subtitlesPainter,
                         onClick = onSubtitleClick,
                     )
+                    VolumeButton(
+                        audioLevel = audioLevel,
+                        onClick = {
+                            onVolumeClick()
+                        },
+                        onHoverChange = { inside ->
+                            volumePointerInside = inside
+                            if (inside) openVolumePopover("button-hover") else requestVolumeClose("button-exit")
+                        },
+                    )
                     PlayerActionPillButton(
                         label = stringResource(Res.string.compose_player_audio),
                         painter = audioPainter,
@@ -541,6 +641,113 @@ private fun ProgressControls(
                     }
                 }
             }
+        }
+        }
+    }
+}
+
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+private fun VolumeButton(
+    audioLevel: PlayerAudioLevel,
+    onClick: () -> Unit,
+    onHoverChange: (Boolean) -> Unit,
+) {
+    val percentage = (audioLevel.fraction.coerceIn(0f, 1f) * 100f).toInt().coerceIn(0, 100)
+    val isMuted = audioLevel.isMuted || percentage == 0
+    val volumeIcon = if (isMuted) Icons.AutoMirrored.Rounded.VolumeOff else Icons.AutoMirrored.Rounded.VolumeUp
+
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(22.dp))
+            .onPointerEvent(PointerEventType.Enter) { onHoverChange(true) }
+            .onPointerEvent(PointerEventType.Exit) { onHoverChange(false) }
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick,
+            )
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = volumeIcon,
+            contentDescription = "Volume",
+            tint = Color.White.copy(alpha = if (isMuted) 0.68f else 1f),
+            modifier = Modifier.size(18.dp),
+        )
+    }
+}
+
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+private fun VolumeSliderPopover(
+    audioLevel: PlayerAudioLevel,
+    onVolumeChange: (Float) -> Unit,
+    onVolumeChangeFinished: () -> Unit,
+    onPointerInsideChange: (Boolean) -> Unit,
+    onDraggingChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val latestOnVolumeChange by rememberUpdatedState(onVolumeChange)
+    val latestOnVolumeChangeFinished by rememberUpdatedState(onVolumeChangeFinished)
+    val latestOnDraggingChange by rememberUpdatedState(onDraggingChange)
+    val percentage = (audioLevel.fraction.coerceIn(0f, 1f) * 100f).toInt().coerceIn(0, 100)
+    val isMuted = audioLevel.isMuted || percentage == 0
+    val volumeIcon = if (isMuted) Icons.AutoMirrored.Rounded.VolumeOff else Icons.AutoMirrored.Rounded.VolumeUp
+
+    Surface(
+        color = Color.Black.copy(alpha = 0.78f),
+        shape = RoundedCornerShape(18.dp),
+        modifier = modifier
+            .onPointerEvent(PointerEventType.Enter) { onPointerInsideChange(true) }
+            .onPointerEvent(PointerEventType.Exit) { onPointerInsideChange(false) }
+            .border(
+                width = 1.dp,
+                color = Color.White.copy(alpha = 0.18f),
+                shape = RoundedCornerShape(18.dp),
+            ),
+    ) {
+        Row(
+            modifier = Modifier
+                .width(210.dp)
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = volumeIcon,
+                contentDescription = "Volume",
+                tint = Color.White.copy(alpha = if (isMuted) 0.72f else 0.96f),
+                modifier = Modifier.size(17.dp),
+            )
+            Slider(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(28.dp)
+                    .graphicsLayer(scaleY = 0.72f),
+                value = audioLevel.fraction.coerceIn(0f, 1f),
+                onValueChange = { value ->
+                    latestOnDraggingChange(true)
+                    latestOnVolumeChange(value.coerceIn(0f, 1f))
+                },
+                onValueChangeFinished = {
+                    latestOnDraggingChange(false)
+                    latestOnVolumeChangeFinished()
+                    PlayerRuntimeTrace.info("volume control committed value=$percentage muted=$isMuted rendered=true")
+                },
+                valueRange = 0f..1f,
+                colors = SliderDefaults.colors(
+                    thumbColor = Color.White,
+                    activeTrackColor = Color.White.copy(alpha = 0.96f),
+                    inactiveTrackColor = Color.White.copy(alpha = 0.24f),
+                ),
+            )
+            Text(
+                text = "$percentage%",
+                style = MaterialTheme.nuvioTypeScale.labelSm.copy(fontWeight = FontWeight.SemiBold),
+                color = Color.White.copy(alpha = 0.92f),
+            )
         }
     }
 }

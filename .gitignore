@@ -50,3 +50,4 @@ composeApp/scripts/package-release-inno.ps1
 .env
 composeApp/runtime-config/release.properties
 Nuvio-*-x64-portable.zip
+packaging/linux/noipv6/libnuvio-noipv6.so

@@ -20,6 +20,7 @@ import com.nuvio.app.desktop.DesktopPlayerRegistry
 import com.nuvio.app.desktop.DesktopRuntimeLog
 import com.nuvio.app.desktop.DesktopUriHandler
 import com.nuvio.app.desktop.DesktopWindowStateStore
+import com.nuvio.app.desktop.LinuxIdleInhibitor
 import com.nuvio.app.desktop.WindowsUrlProtocolRegistrar
 import com.nuvio.app.desktop.WindowsNativeBootstrap
 import com.nuvio.app.features.trakt.TraktAuthRepository
@@ -42,6 +43,43 @@ private fun configureMacOsNativeAppearance() {
     val osName = System.getProperty("os.name")?.lowercase() ?: return
     if (!osName.contains("mac")) return
     System.setProperty("apple.awt.application.appearance", "NSAppearanceNameDarkAqua")
+}
+
+private fun configureLinuxNetworkDefaults() {
+    val osName = System.getProperty("os.name")?.lowercase() ?: return
+    if (!osName.contains("linux")) return
+    val preferIPv4Stack = System.getProperty("java.net.preferIPv4Stack")
+    val preferIPv6Addresses = System.getProperty("java.net.preferIPv6Addresses")
+    if (preferIPv4Stack.isNullOrBlank()) {
+        DesktopRuntimeLog.warn(
+            "linuxNetworkDefaults java.net.preferIPv4Stack missing at startup; setting fallback now. " +
+                "Launch with -Djava.net.preferIPv4Stack=true for reliable behavior.",
+        )
+        System.setProperty("java.net.preferIPv4Stack", "true")
+    }
+    if (preferIPv6Addresses.isNullOrBlank()) {
+        DesktopRuntimeLog.warn(
+            "linuxNetworkDefaults java.net.preferIPv6Addresses missing at startup; setting fallback now. " +
+                "Launch with -Djava.net.preferIPv6Addresses=false for reliable behavior.",
+        )
+        System.setProperty("java.net.preferIPv6Addresses", "false")
+    }
+    DesktopRuntimeLog.info(
+        "linuxNetworkDefaults java.net.preferIPv4Stack=${System.getProperty("java.net.preferIPv4Stack")} " +
+            "java.net.preferIPv6Addresses=${System.getProperty("java.net.preferIPv6Addresses") ?: "unset"}",
+    )
+}
+
+private fun isLinuxDesktop(): Boolean =
+    System.getProperty("os.name").orEmpty().lowercase().contains("linux")
+
+private fun forceExitOnCloseEnabled(): Boolean {
+    val configured = System.getProperty("nuvio.desktop.forceExitOnClose")?.trim()
+    return when {
+        configured.equals("false", ignoreCase = true) -> false
+        configured.equals("true", ignoreCase = true) -> true
+        else -> isLinuxDesktop()
+    }
 }
 
 private fun computeStartupWindowSize(): DpSize {
@@ -73,10 +111,19 @@ private fun clampDpSizeToDisplay(size: DpSize): DpSize {
 
 fun main(args: Array<String>) {
     DesktopRuntimeLog.initialize()
+    configureLinuxNetworkDefaults()
+    val mpvLogPath = DesktopRuntimeLog.mpvLogPath()
+    System.setProperty("nuvio.mpv.log.file", mpvLogPath.toString())
     WindowsNativeBootstrap.configureProcessDpiAwareness()
     DesktopRuntimeLog.installGlobalExceptionHandlers()
     val pid = DesktopRuntimeLog.processPid()
     DesktopRuntimeLog.info("app startup pid=$pid")
+    DesktopRuntimeLog.info("mpv.log.file=$mpvLogPath")
+    val forceExitOnCloseEnabled = forceExitOnCloseEnabled()
+    DesktopRuntimeLog.info(
+        "windowClose forceExitOnClose enabled=$forceExitOnCloseEnabled " +
+            "property=${System.getProperty("nuvio.desktop.forceExitOnClose") ?: "unset"} os=${System.getProperty("os.name")}",
+    )
     DesktopRuntimeLog.info(
         "NUVIO_RUNTIME_PATCH_MARKER=cursor-player-session-render-shutdown-v2 " +
             "pid=$pid ts=${System.currentTimeMillis()} user.dir=${System.getProperty("user.dir")} " +
@@ -84,10 +131,11 @@ fun main(args: Array<String>) {
             "buildBranch=${System.getProperty("nuvio.git.branch") ?: "unknown"}",
     )
     Runtime.getRuntime().addShutdownHook(
-        Thread {
+        Thread({
             val startMs = System.currentTimeMillis()
             DesktopRuntimeLog.info("shutdownHook start pid=$pid")
             DesktopRuntimeLog.logNonDaemonThreads("shutdownHook:beforeClose")
+            LinuxIdleInhibitor.release("shutdownHook")
             DesktopPlayerRegistry.releaseAll("shutdownHook")
             DesktopPlayerRegistry.closeAll("shutdownHook")
             // Give in-flight `mpv_terminate_destroy` calls a bounded window to
@@ -98,12 +146,18 @@ fun main(args: Array<String>) {
             DesktopPlayerRegistry.awaitAllCloses(timeoutMs = 3000L)
             DesktopRuntimeLog.logNonDaemonThreads("shutdownHook:afterClose")
             DesktopRuntimeLog.info("shutdownHook end pid=$pid elapsedMs=${System.currentTimeMillis() - startMs}")
-        },
+        }, "nuvio-main-shutdown-hook"),
     )
     DesktopRuntimeLog.info("version=${AppVersionConfig.VERSION_NAME}(${AppVersionConfig.VERSION_CODE})")
     DesktopRuntimeLog.info("os=${System.getProperty("os.name")} ${System.getProperty("os.version")}")
     DesktopRuntimeLog.info("java=${System.getProperty("java.version")}")
     DesktopRuntimeLog.info("user.dir=${System.getProperty("user.dir")}")
+    DesktopRuntimeLog.info(
+        "linuxLauncher ipv4Only=${System.getenv("NUVIO_IPV4_ONLY") ?: "unset"} " +
+            "firejailActive=${System.getenv("NUVIO_FIREJAIL_ACTIVE") ?: "unset"} " +
+            "networkMode=${System.getenv("NUVIO_MPV_NETWORK_MODE") ?: System.getProperty("nuvio.mpv.networkMode") ?: System.getProperty("nuvio.mpv.network.mode") ?: "auto"} " +
+            "javaToolOptions=${System.getenv("JAVA_TOOL_OPTIONS") ?: "unset"}",
+    )
     DesktopRuntimeLog.info("compose.resources.dir=${System.getProperty("compose.application.resources.dir") ?: "unset"}")
     DesktopRuntimeLog.info("java.library.path=${System.getProperty("java.library.path") ?: "unset"}")
     DesktopRuntimeLog.info("supabase.url=${SupabaseConfig.URL}")
@@ -125,7 +179,9 @@ fun main(args: Array<String>) {
         }
 
         is DesktopSingleInstanceManager.StartResult.Primary -> {
-            Runtime.getRuntime().addShutdownHook(Thread { ipcResult.close() })
+            Runtime.getRuntime().addShutdownHook(
+                Thread({ ipcResult.close() }, "nuvio-single-instance-shutdown-hook"),
+            )
         }
 
         DesktopSingleInstanceManager.StartResult.NoPrimaryAvailable -> {
@@ -158,6 +214,7 @@ fun main(args: Array<String>) {
                 val closeStartMs = System.currentTimeMillis()
                 DesktopRuntimeLog.info("windowClose requested pid=$pid")
                 DesktopRuntimeLog.logNonDaemonThreads("windowClose:beforeCleanup")
+                LinuxIdleInhibitor.release("windowClose")
                 // 1) Soft stop on the EDT — fast, halts MPV playback.
                 // 2) Trigger the native close path explicitly: Compose's
                 //    `exitApplication` does NOT always dispose the player
@@ -175,12 +232,18 @@ fun main(args: Array<String>) {
                 DesktopRuntimeLog.logNonDaemonThreads("windowClose:beforeExitApplication")
                 DesktopRuntimeLog.info("windowClose exitApplication pid=$pid elapsedMs=${System.currentTimeMillis() - closeStartMs}")
                 exitApplication()
-                val forceExitEnabled = System.getProperty("nuvio.desktop.forceExitOnClose", "false")
-                    .equals("true", ignoreCase = true)
-                if (forceExitEnabled) {
-                    DesktopRuntimeLog.warn("windowClose force exitProcess enabled pid=$pid")
+                if (forceExitOnCloseEnabled) {
+                    DesktopRuntimeLog.warn(
+                        "windowClose force exitProcess enabled pid=$pid reason=cleanup-completed " +
+                            "remaining=${DesktopRuntimeLog.nonDaemonThreadSummary()}",
+                    )
                     DesktopRuntimeLog.logNonDaemonThreads("windowClose:beforeForceExit")
                     exitProcess(0)
+                } else {
+                    DesktopRuntimeLog.info(
+                        "windowClose force exitProcess disabled pid=$pid " +
+                            "remaining=${DesktopRuntimeLog.nonDaemonThreadSummary()}",
+                    )
                 }
             },
             title = "Nuvio",

@@ -15,6 +15,12 @@ interface PlayerEngineController {
     fun pause()
     fun seekTo(positionMs: Long)
     fun seekBy(offsetMs: Long)
+    fun currentVolume(): PlayerAudioLevel? = null
+    fun setVolume(fraction: Float): PlayerAudioLevel? = null
+    fun toggleMute(): PlayerAudioLevel? = null
+    fun setMuted(muted: Boolean): PlayerAudioLevel? = null
+    fun volumeUp(): PlayerAudioLevel? = null
+    fun volumeDown(): PlayerAudioLevel? = null
     fun retry()
     fun setPlaybackSpeed(speed: Float)
     fun getAudioTracks(): List<AudioTrack>

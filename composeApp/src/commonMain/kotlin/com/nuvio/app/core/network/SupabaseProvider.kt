@@ -1,5 +1,6 @@
 package com.nuvio.app.core.network
 
+import com.nuvio.app.core.auth.AuthPlatform
 import io.github.jan.supabase.auth.Auth
 import io.github.jan.supabase.createSupabaseClient
 import io.github.jan.supabase.functions.Functions
@@ -17,7 +18,9 @@ object SupabaseProvider {
             supabaseUrl = SupabaseConfig.URL,
             supabaseKey = SupabaseConfig.ANON_KEY,
         ) {
-            install(Auth)
+            install(Auth) {
+                AuthPlatform.configureAuth(this)
+            }
             install(Postgrest)
             install(Functions)
         }

@@ -60,6 +60,61 @@ Useful commands:
 ./scripts/build-distribution.sh
 ```
 
+### Desktop on Arch Linux
+
+Install the desktop build prerequisites. `firejail` is optional as a fallback IPv4-only sandbox; the local launcher normally uses the bundled no-IPv6 `LD_PRELOAD` library first.
+
+```bash
+sudo pacman -S jdk21-openjdk mpv firejail
+echo "$JAVA_HOME"
+java -version
+javac -version
+ldd /usr/lib/libmpv.so.2
+```
+
+Build the Compose Desktop release app image and Arch-friendly archive:
+
+```bash
+./gradlew :composeApp:createReleaseDistributable
+./gradlew :composeApp:packageReleaseArch
+```
+
+`packageReleaseArch` only runs on Linux hosts and writes `composeApp/build/compose/binaries/main-release/arch/Nuvio-<version>-linux-x64.tar.gz`.
+Linux playback prefers the system MPV runtime at `/usr/lib/libmpv.so.2`; set `NUVIO_MPV_DIR=/path/to/libmpv-dir` before launching only when testing a custom MPV build.
+
+For local desktop installs, run:
+
+```bash
+bash scripts/install-local-linux.sh
+nuvio-linux
+```
+
+The local launcher defaults to embedded MPV with `NUVIO_MPV_NETWORK_MODE=direct-ipv4`, JVM IPv4 startup flags, and the bundled no-IPv6 `LD_PRELOAD` library. If that library is missing, it falls back to Firejail when `firejail` is installed. To launch without either IPv4-only process wrapper, use:
+
+```bash
+NUVIO_IPV4_ONLY=0 nuvio-linux
+```
+
+The local playback proxy is not the default. Use it only for explicit debugging:
+
+```bash
+NUVIO_MPV_NETWORK_MODE=proxy nuvio-linux
+```
+
+AUR packaging note: add `firejail` as an optional fallback dependency:
+
+```text
+firejail: fallback IPv4-only sandbox for reliable direct MPV playback
+```
+
+Run the release app image for a runtime smoke test:
+
+```bash
+./gradlew :composeApp:runReleaseDistributable
+```
+
+Before publishing a Linux archive, manually verify that the app opens, catalog UI loads, one stream starts, the MPV backend initializes, fullscreen works, and there is no missing `libmpv` or native-loading crash.
+
 Versioning is driven from `iosApp/Configuration/Version.xcconfig`, which is used as the shared source of truth for both iOS and Android builds.
 
 ## Legal & DMCA

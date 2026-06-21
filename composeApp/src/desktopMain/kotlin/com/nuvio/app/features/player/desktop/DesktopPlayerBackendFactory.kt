@@ -8,27 +8,43 @@ import com.nuvio.app.features.player.desktop.nativebridge.NativeBridgeDesktopPla
 import com.nuvio.app.features.player.desktop.nativebridge.NativeBridgeRuntimeLocator
 
 internal object DesktopPlayerBackendFactory {
-    private const val BACKEND_PROPERTY = "nuvio.windows.player.backend"
-    private const val BACKEND_ENV = "NUVIO_WINDOWS_PLAYER_BACKEND"
+    private const val DESKTOP_BACKEND_PROPERTY = "nuvio.desktop.player.backend"
+    private const val DESKTOP_BACKEND_ENV = "NUVIO_DESKTOP_PLAYER_BACKEND"
+    private const val LEGACY_WINDOWS_BACKEND_PROPERTY = "nuvio.windows.player.backend"
+    private const val LEGACY_WINDOWS_BACKEND_ENV = "NUVIO_WINDOWS_PLAYER_BACKEND"
 
-    fun createWindowsBackend(): DesktopPlayerBackend {
+    private val isWindows: Boolean
+        get() = System.getProperty("os.name")?.contains("Windows", ignoreCase = true) == true
+    private val osName: String
+        get() = System.getProperty("os.name").orEmpty()
+
+    fun createDesktopBackend(): DesktopPlayerBackend {
         val selection = DesktopPlayerBackendSelection.resolve()
-        DesktopRuntimeLog.info("Selected Windows player backend request=${selection.value} source=${selection.source}")
+        DesktopRuntimeLog.info("Selected desktop player backend os=$osName request=${selection.value} source=${selection.source}")
         return when (selection.backend) {
             DesktopPlayerBackendKind.None -> unavailable(
-                backendName = "windows-none",
-                technicalMessage = "Windows player backend disabled by configuration.",
+                backendName = "desktop-none",
+                technicalMessage = "Desktop player backend disabled by configuration.",
+                selection = selection,
+            )
+            DesktopPlayerBackendKind.ExternalMpv -> unavailable(
+                backendName = "desktop-external-mpv",
+                technicalMessage = "External mpv mode was explicitly requested, but no external mpv backend is enabled in this build.",
                 selection = selection,
             )
             DesktopPlayerBackendKind.Mpv -> createMpvOrUnavailable(selection)
             DesktopPlayerBackendKind.Auto -> createMpvOrUnavailable(selection)
-            DesktopPlayerBackendKind.Native -> createNativeWithMpvFallback(selection)
+            DesktopPlayerBackendKind.Native -> {
+                if (isWindows) createNativeWithMpvFallback(selection) else createMpvOrUnavailable(selection)
+            }
         }
     }
 
+    fun createWindowsBackend(): DesktopPlayerBackend = createDesktopBackend()
+
     private fun createMpvOrUnavailable(selection: DesktopPlayerBackendSelection): DesktopPlayerBackend =
         createMpvOrNull(selection) ?: unavailable(
-            backendName = "windows-mediamp-mpv",
+            backendName = "desktop-mediamp-mpv",
             technicalMessage = "MPV backend is unavailable.",
             selection = selection,
         )
@@ -53,6 +69,10 @@ internal object DesktopPlayerBackendFactory {
 
     private fun createMpvOrNull(selection: DesktopPlayerBackendSelection): DesktopPlayerBackend? {
         val runtime = MpvRuntimeLocator.resolve()
+        DesktopRuntimeLog.info(
+            "MPV runtime lookup os=$osName selectedBackend=${selection.value} playbackMode=embedded externalProcess=false " +
+                "diagnostics=${runtime.diagnostics}",
+        )
         val bootstrap = MpvRuntimeBootstrap.apply(runtime)
         if (!bootstrap.success) {
             DesktopRuntimeLog.error("MPV runtime bootstrap failed diagnostics=${bootstrap.diagnostics}", bootstrap.error)
@@ -60,7 +80,10 @@ internal object DesktopPlayerBackendFactory {
         }
         return MpvDesktopPlayerBackend.create(runtime)
             .onSuccess {
-                DesktopRuntimeLog.info("Selected player backend=${it.backendName} (source=${selection.source} request=${selection.value})")
+                DesktopRuntimeLog.info(
+                    "Selected player backend=${it.backendName} playbackMode=embedded externalProcess=false " +
+                        "(source=${selection.source} request=${selection.value})",
+                )
             }
             .onFailure { DesktopRuntimeLog.error("MPV backend init failed", it) }
             .getOrNull()
@@ -86,6 +109,7 @@ internal object DesktopPlayerBackendFactory {
         Auto,
         Mpv,
         Native,
+        ExternalMpv,
         None,
     }
 
@@ -96,10 +120,16 @@ internal object DesktopPlayerBackendFactory {
     ) {
         companion object {
             fun resolve(): DesktopPlayerBackendSelection {
-                val property = System.getProperty(BACKEND_PROPERTY)?.trim()?.lowercase()
-                if (!property.isNullOrBlank()) return fromValue(property, "system-property:$BACKEND_PROPERTY")
-                val env = System.getenv(BACKEND_ENV)?.trim()?.lowercase()
-                if (!env.isNullOrBlank()) return fromValue(env, "env:$BACKEND_ENV")
+                val property = System.getProperty(DESKTOP_BACKEND_PROPERTY)?.trim()?.lowercase()
+                if (!property.isNullOrBlank()) return fromValue(property, "system-property:$DESKTOP_BACKEND_PROPERTY")
+                val env = System.getenv(DESKTOP_BACKEND_ENV)?.trim()?.lowercase()
+                if (!env.isNullOrBlank()) return fromValue(env, "env:$DESKTOP_BACKEND_ENV")
+                val legacyProperty = System.getProperty(LEGACY_WINDOWS_BACKEND_PROPERTY)?.trim()?.lowercase()
+                if (!legacyProperty.isNullOrBlank()) {
+                    return fromValue(legacyProperty, "system-property:$LEGACY_WINDOWS_BACKEND_PROPERTY")
+                }
+                val legacyEnv = System.getenv(LEGACY_WINDOWS_BACKEND_ENV)?.trim()?.lowercase()
+                if (!legacyEnv.isNullOrBlank()) return fromValue(legacyEnv, "env:$LEGACY_WINDOWS_BACKEND_ENV")
                 return DesktopPlayerBackendSelection(DesktopPlayerBackendKind.Auto, "auto", "default")
             }
 
@@ -108,6 +138,7 @@ internal object DesktopPlayerBackendFactory {
                     backend = when (value) {
                         "mpv" -> DesktopPlayerBackendKind.Mpv
                         "native" -> DesktopPlayerBackendKind.Native
+                        "external-mpv" -> DesktopPlayerBackendKind.ExternalMpv
                         "none" -> DesktopPlayerBackendKind.None
                         else -> DesktopPlayerBackendKind.Auto
                     },

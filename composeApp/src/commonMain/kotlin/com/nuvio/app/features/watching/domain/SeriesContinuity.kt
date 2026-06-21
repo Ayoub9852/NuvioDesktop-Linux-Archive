@@ -22,7 +22,11 @@ fun continueWatchingProgressEntries(
         record.seasonNumber != null && record.episodeNumber != null
     }
     val latestPerSeries = episodes
-        .sortedByDescending { record -> record.lastUpdatedEpochMs }
+        .sortedWith(
+            compareByDescending<WatchingProgressRecord> { record -> record.lastUpdatedEpochMs }
+                .thenByDescending { record -> normalizeSeasonNumber(record.seasonNumber) }
+                .thenByDescending { record -> record.episodeNumber ?: 0 },
+        )
         .distinctBy { record -> record.content.id }
     return (nonEpisodes + latestPerSeries)
         .sortedByDescending { record -> record.lastUpdatedEpochMs }

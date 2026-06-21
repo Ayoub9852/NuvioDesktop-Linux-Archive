@@ -41,7 +41,7 @@ internal fun DesktopPlayerSurfaceHost(
 
     var activeSessionKey by remember { mutableStateOf<String?>(null) }
     val backend = remember {
-        DesktopPlayerBackendFactory.createWindowsBackend()
+        DesktopPlayerBackendFactory.createDesktopBackend()
     }
 
     DisposableEffect(backend) {

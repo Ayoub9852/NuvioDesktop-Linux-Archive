@@ -28,20 +28,31 @@ import com.nuvio.app.core.sync.encodeSyncFloat
 import com.nuvio.app.core.sync.encodeSyncInt
 import com.nuvio.app.core.sync.encodeSyncString
 import com.nuvio.app.core.sync.encodeSyncStringSet
+import com.nuvio.app.desktop.DesktopRuntimeLog
+import com.nuvio.app.desktop.LinuxIdleInhibitor
 import com.nuvio.app.desktop.DesktopPreferences
 import com.nuvio.app.features.player.desktop.DesktopPlayerSurfaceHost
 import com.nuvio.app.features.details.MetaVideo
 import com.nuvio.app.features.streams.AddonStreamGroup
 import com.nuvio.app.features.streams.StreamItem
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.awt.Component
 import java.awt.Cursor
+import java.awt.EventQueue
 import java.awt.Frame
 import java.awt.KeyEventDispatcher
 import java.awt.KeyboardFocusManager
 import java.awt.Point
+import java.awt.TextComponent
 import java.awt.Toolkit
 import java.awt.event.KeyEvent
+import java.awt.event.WindowEvent
+import java.awt.event.WindowFocusListener
 import java.awt.image.BufferedImage
 import java.util.Locale
+import javax.swing.SwingUtilities
+import javax.swing.text.JTextComponent
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -904,7 +915,23 @@ internal actual object PlayerSettingsStorage {
 actual fun LockPlayerToLandscape() = Unit
 
 @Composable
-actual fun EnterImmersivePlayerMode(keepScreenAwake: Boolean) = Unit
+actual fun EnterImmersivePlayerMode(keepScreenAwake: Boolean) {
+    LaunchedEffect(keepScreenAwake) {
+        withContext(Dispatchers.IO) {
+            if (keepScreenAwake) {
+                LinuxIdleInhibitor.acquire("playback-state-playing")
+            } else {
+                LinuxIdleInhibitor.release("playback-state-not-playing")
+            }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            LinuxIdleInhibitor.release("player-dispose")
+        }
+    }
+}
 
 @Composable
 actual fun ManagePlayerPictureInPicture(
@@ -1002,8 +1029,145 @@ actual fun ManageFullscreenKeyboardShortcuts(isHomeRouteActive: Boolean) {
     }
 }
 
+@Composable
+actual fun ManagePlayerKeyboardShortcuts(
+    enabled: Boolean,
+    inputBlocked: Boolean,
+    onShortcut: (PlayerShortcutKey, Boolean) -> Boolean,
+    onRequestFocus: (String) -> Unit,
+) {
+    val window = LocalDesktopWindow.current as? ComposeWindow
+    val currentEnabled by rememberUpdatedState(enabled)
+    val currentInputBlocked by rememberUpdatedState(inputBlocked)
+    val currentOnShortcut by rememberUpdatedState(onShortcut)
+    val currentOnRequestFocus by rememberUpdatedState(onRequestFocus)
+
+    DisposableEffect(window) {
+        val composeWindow = window ?: return@DisposableEffect onDispose {}
+        val keyboardFocusManager = KeyboardFocusManager.getCurrentKeyboardFocusManager()
+        val debugKeys = playerKeyDebugEnabled()
+
+        fun log(message: String) {
+            DesktopRuntimeLog.info("PLAYER_KEYS $message")
+        }
+
+        val focusListener = object : WindowFocusListener {
+            override fun windowGainedFocus(event: WindowEvent) {
+                log(
+                    "window gained focus active=${composeWindow.isActive} focused=${composeWindow.isFocused} " +
+                        "focusOwner=${keyboardFocusManager.focusOwner?.javaClass?.name ?: "null"}",
+                )
+                EventQueue.invokeLater {
+                    if (currentEnabled && !currentInputBlocked && !isEditableFocusOwner(keyboardFocusManager.focusOwner)) {
+                        currentOnRequestFocus("window-gained-focus")
+                    } else if (debugKeys) {
+                        log(
+                            "focus request skipped reason=window-gained-focus enabled=$currentEnabled " +
+                                "inputBlocked=$currentInputBlocked editable=${isEditableFocusOwner(keyboardFocusManager.focusOwner)}",
+                        )
+                    }
+                }
+            }
+
+            override fun windowLostFocus(event: WindowEvent) {
+                log(
+                    "window lost focus active=${composeWindow.isActive} focused=${composeWindow.isFocused} " +
+                        "opposite=${event.oppositeWindow?.javaClass?.name ?: "null"}",
+                )
+            }
+        }
+
+        val dispatcher = KeyEventDispatcher { event ->
+            if (!currentEnabled || event.id != KeyEvent.KEY_RELEASED) {
+                return@KeyEventDispatcher false
+            }
+
+            val shortcutKey = event.toPlayerShortcutKey()
+                ?: return@KeyEventDispatcher false
+            val focusOwner = keyboardFocusManager.focusOwner
+            val focusOwnerWindow = focusOwner?.let { SwingUtilities.getWindowAncestor(it) }
+            val editableFocus = isEditableFocusOwner(focusOwner)
+            val windowActive = composeWindow.isActive || composeWindow.isFocused
+
+            if (debugKeys) {
+                log(
+                    "event received source=desktop-dispatcher key=$shortcutKey shift=${event.isShiftDown} " +
+                        "windowActive=$windowActive active=${composeWindow.isActive} focused=${composeWindow.isFocused} " +
+                        "focusOwner=${focusOwner?.javaClass?.name ?: "null"} focusOwnerInWindow=${focusOwnerWindow == composeWindow} " +
+                        "inputBlocked=$currentInputBlocked editableFocus=$editableFocus consumed=${event.isConsumed}",
+                )
+            }
+
+            if (!windowActive) {
+                if (debugKeys) log("event ignored key=$shortcutKey reason=window-not-active")
+                return@KeyEventDispatcher false
+            }
+            if (focusOwnerWindow != null && focusOwnerWindow != composeWindow) {
+                if (debugKeys) log("event ignored key=$shortcutKey reason=focus-owner-other-window")
+                return@KeyEventDispatcher false
+            }
+            if (editableFocus) {
+                log("event ignored key=$shortcutKey reason=editable-focus focusOwner=${focusOwner?.javaClass?.name}")
+                return@KeyEventDispatcher false
+            }
+            if (currentInputBlocked) {
+                log("event ignored key=$shortcutKey reason=input-blocked")
+                return@KeyEventDispatcher false
+            }
+
+            val handled = currentOnShortcut(shortcutKey, event.isShiftDown)
+            if (debugKeys || handled) {
+                log("event handled=$handled source=desktop-dispatcher key=$shortcutKey shift=${event.isShiftDown}")
+            }
+            handled
+        }
+
+        log("dispatcher installed window=${composeWindow.title} enabled=$currentEnabled")
+        composeWindow.addWindowFocusListener(focusListener)
+        keyboardFocusManager.addKeyEventDispatcher(dispatcher)
+        EventQueue.invokeLater {
+            if (currentEnabled && !currentInputBlocked && composeWindow.isActive) {
+                currentOnRequestFocus("dispatcher-installed")
+            }
+        }
+        onDispose {
+            log("dispatcher removed window=${composeWindow.title}")
+            keyboardFocusManager.removeKeyEventDispatcher(dispatcher)
+            composeWindow.removeWindowFocusListener(focusListener)
+        }
+    }
+}
+
 private object DesktopFullscreenState {
     var previousPlacement: WindowPlacement = WindowPlacement.Floating
+}
+
+private fun playerKeyDebugEnabled(): Boolean =
+    System.getenv("NUVIO_DEBUG_KEYS") == "1" ||
+        System.getProperty("nuvio.debugKeys").equals("true", ignoreCase = true)
+
+private fun KeyEvent.toPlayerShortcutKey(): PlayerShortcutKey? =
+    when (keyCode) {
+        KeyEvent.VK_SPACE -> PlayerShortcutKey.Space
+        KeyEvent.VK_LEFT -> PlayerShortcutKey.Left
+        KeyEvent.VK_RIGHT -> PlayerShortcutKey.Right
+        KeyEvent.VK_M -> PlayerShortcutKey.Mute
+        KeyEvent.VK_F -> PlayerShortcutKey.Fullscreen
+        KeyEvent.VK_ESCAPE -> PlayerShortcutKey.Escape
+        KeyEvent.VK_UP -> PlayerShortcutKey.VolumeUp
+        KeyEvent.VK_DOWN -> PlayerShortcutKey.VolumeDown
+        else -> null
+    }
+
+private fun isEditableFocusOwner(component: Component?): Boolean {
+    if (component == null) return false
+    if (component is TextComponent && component.isEditable) return true
+    if (component is JTextComponent && component.isEditable) return true
+    val className = component.javaClass.name.lowercase(Locale.ROOT)
+    return className.contains("textfield") ||
+        className.contains("textarea") ||
+        className.contains("textinput") ||
+        className.contains("editorpane")
 }
 
 private fun ComposeWindow.toggleDesktopFullscreen() {

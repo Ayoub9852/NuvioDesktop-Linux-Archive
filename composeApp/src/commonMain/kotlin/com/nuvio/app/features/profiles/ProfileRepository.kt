@@ -26,6 +26,7 @@ import com.nuvio.app.features.watched.WatchedRepository
 import com.nuvio.app.features.watchprogress.ContinueWatchingPreferencesRepository
 import com.nuvio.app.features.watchprogress.WatchProgressRepository
 import io.github.jan.supabase.postgrest.postgrest
+import io.github.jan.supabase.postgrest.query.Order
 import io.github.jan.supabase.postgrest.rpc
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -35,6 +36,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -111,21 +113,10 @@ object ProfileRepository {
         runCatching {
             val result = SupabaseProvider.client.postgrest.rpc("sync_pull_profiles")
             val profiles = result.decodeList<NuvioProfile>()
-            _state.value = _state.value.copy(
-                profiles = profiles.sortedBy { it.profileIndex },
-                isLoaded = true,
-                activeProfile = profiles.find { it.profileIndex == activeProfileIndex }
-                    ?: profiles.firstOrNull(),
-            )
-            if (_state.value.activeProfile != null) {
-                activeProfileIndex = _state.value.activeProfile!!.profileIndex
-            }
-            persist()
+            applyPulledProfiles(profiles)
         }.onFailure { e ->
             log.e(e) { "Failed to pull profiles" }
-            if (!_state.value.isLoaded) {
-                _state.value = _state.value.copy(isLoaded = true)
-            }
+            pullProfilesFromTableFallback()
         }
     }
 
@@ -172,6 +163,7 @@ object ProfileRepository {
             pullProfiles()
         }.onFailure { e ->
             log.e(e) { "Failed to push profiles" }
+            pushProfilesToTableFallback(profiles)
         }
     }
 
@@ -261,6 +253,7 @@ object ProfileRepository {
             pullProfiles()
         }.onFailure { e ->
             log.e(e) { "Failed to delete profile $profileIndex" }
+            deleteProfileFromTableFallback(profileIndex)
         }
     }
 
@@ -377,6 +370,95 @@ object ProfileRepository {
             activeProfileIndex = _state.value.activeProfile!!.profileIndex
         }
         syncPinCache(profiles)
+        persist()
+    }
+
+    private suspend fun pullProfilesFromTableFallback() {
+        val authState = AuthRepository.state.value as? AuthState.Authenticated
+        if (authState == null || authState.isAnonymous) {
+            if (!_state.value.isLoaded) {
+                _state.value = _state.value.copy(isLoaded = true)
+            }
+            return
+        }
+
+        runCatching {
+            val result = SupabaseProvider.client.postgrest
+                .from("profiles")
+                .select {
+                    filter { eq("user_id", authState.userId) }
+                    order("profile_index", Order.ASCENDING)
+                }
+            applyPulledProfiles(result.decodeList<NuvioProfile>())
+        }.onFailure { error ->
+            log.e(error) { "Failed to pull profiles from profiles table fallback" }
+            if (!_state.value.isLoaded) {
+                _state.value = _state.value.copy(isLoaded = true)
+            }
+        }
+    }
+
+    private suspend fun pushProfilesToTableFallback(profiles: List<ProfilePushPayload>) {
+        val authState = AuthRepository.state.value as? AuthState.Authenticated
+        if (authState == null || authState.isAnonymous) return
+
+        runCatching {
+            val rows = profiles.map { profile ->
+                ProfileTableUpsertRow(
+                    userId = authState.userId,
+                    profileIndex = profile.profileIndex,
+                    name = profile.name,
+                    avatarColorHex = profile.avatarColorHex,
+                    avatarId = profile.avatarId,
+                    avatarUrl = profile.avatarUrl,
+                    usesPrimaryAddons = profile.usesPrimaryAddons,
+                    usesPrimaryPlugins = profile.usesPrimaryPlugins,
+                )
+            }
+            SupabaseProvider.client.postgrest
+                .from("profiles")
+                .upsert(rows) {
+                    onConflict = "user_id,profile_index"
+                }
+            pullProfilesFromTableFallback()
+        }.onFailure { error ->
+            log.e(error) { "Failed to push profiles to profiles table fallback" }
+            if (!_state.value.isLoaded) {
+                applyPayloadsLocally(profiles)
+            }
+        }
+    }
+
+    private suspend fun deleteProfileFromTableFallback(profileIndex: Int) {
+        val authState = AuthRepository.state.value as? AuthState.Authenticated
+        if (authState == null || authState.isAnonymous) return
+
+        runCatching {
+            SupabaseProvider.client.postgrest
+                .from("profiles")
+                .delete {
+                    filter {
+                        eq("user_id", authState.userId)
+                        eq("profile_index", profileIndex)
+                    }
+                }
+            pullProfilesFromTableFallback()
+        }.onFailure { error ->
+            log.e(error) { "Failed to delete profile $profileIndex from profiles table fallback" }
+        }
+    }
+
+    private fun applyPulledProfiles(profiles: List<NuvioProfile>) {
+        val sortedProfiles = profiles.sortedBy { it.profileIndex }
+        _state.value = _state.value.copy(
+            profiles = sortedProfiles,
+            isLoaded = true,
+            activeProfile = sortedProfiles.find { it.profileIndex == activeProfileIndex }
+                ?: sortedProfiles.firstOrNull(),
+        )
+        if (_state.value.activeProfile != null) {
+            activeProfileIndex = _state.value.activeProfile!!.profileIndex
+        }
         persist()
     }
 
@@ -501,4 +583,16 @@ data class ProfileLockState(
     @kotlinx.serialization.SerialName("profile_index") val profileIndex: Int,
     @kotlinx.serialization.SerialName("pin_enabled") val pinEnabled: Boolean = false,
     @kotlinx.serialization.SerialName("pin_locked_until") val pinLockedUntil: String? = null,
+)
+
+@Serializable
+private data class ProfileTableUpsertRow(
+    @SerialName("user_id") val userId: String,
+    @SerialName("profile_index") val profileIndex: Int,
+    val name: String,
+    @SerialName("avatar_color_hex") val avatarColorHex: String,
+    @SerialName("avatar_id") val avatarId: String? = null,
+    @SerialName("avatar_url") val avatarUrl: String? = null,
+    @SerialName("uses_primary_addons") val usesPrimaryAddons: Boolean = false,
+    @SerialName("uses_primary_plugins") val usesPrimaryPlugins: Boolean = false,
 )

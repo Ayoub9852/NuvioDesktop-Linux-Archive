@@ -48,6 +48,7 @@ data class TraktProgressUiState(
 
 object TraktProgressRepository {
     private val log = Logger.withTag("TraktProgress")
+    private val syncLog = Logger.withTag("TRAKT_SYNC")
     private val json = Json { ignoreUnknownKeys = true }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -85,7 +86,9 @@ object TraktProgressRepository {
         ensureLoaded()
         val requestId = nextRefreshRequestId()
         val headers = TraktAuthRepository.authorizedHeaders()
+        syncLog.i { "refresh start authenticated=${headers != null} sourceActive=true" }
         if (headers == null) {
+            syncLog.i { "refresh skipped reason=not-authenticated" }
             _uiState.value = TraktProgressUiState()
             return
         }
@@ -107,36 +110,29 @@ object TraktProgressRepository {
             return
         }
 
+        val completedEntries = runCatching {
+            fetchHistoryEntries(headers) + fetchWatchedShowSeedEntries(headers)
+        }.onFailure { error ->
+            if (error is CancellationException) throw error
+            log.w { "Failed to fetch Trakt history snapshot: ${error.message}" }
+            syncLog.w { "completed snapshot failed keepingPlayback=true error=${error.message}" }
+        }.getOrDefault(emptyList())
+
+        if (!isLatestRefreshRequest(requestId)) return
+
+        val merged = mergeNewestByVideoId(playbackEntries + completedEntries)
+        syncLog.i {
+            "refresh merged playbackCount=${playbackEntries.size} completedCount=${completedEntries.size} " +
+                "mergedCount=${merged.size}"
+        }
         _uiState.value = TraktProgressUiState(
-            entries = playbackEntries,
+            entries = merged.sortedByDescending { it.lastUpdatedEpochMs },
             isLoading = false,
             errorMessage = null,
         )
 
-        if (playbackEntries.isNotEmpty()) {
-            launchHydration(requestId = requestId, entries = playbackEntries)
-        }
-
-        scope.launch {
-            val completedEntries = runCatching {
-                fetchHistoryEntries(headers) + fetchWatchedShowSeedEntries(headers)
-            }.onFailure { error ->
-                if (error is CancellationException) throw error
-                log.w { "Failed to fetch Trakt history snapshot: ${error.message}" }
-            }.getOrNull() ?: return@launch
-
-            if (!isLatestRefreshRequest(requestId)) return@launch
-
-            val merged = mergeNewestByVideoId(playbackEntries + completedEntries)
-            _uiState.value = _uiState.value.copy(
-                entries = merged.sortedByDescending { it.lastUpdatedEpochMs },
-                isLoading = false,
-                errorMessage = null,
-            )
-
-            if (merged.isNotEmpty()) {
-                launchHydration(requestId = requestId, entries = merged)
-            }
+        if (merged.isNotEmpty()) {
+            launchHydration(requestId = requestId, entries = merged)
         }
     }
 
@@ -306,6 +302,8 @@ object TraktProgressRepository {
 
         val moviePlayback = json.decodeFromString<List<TraktPlaybackItem>>(moviesPayload)
         val episodePlayback = json.decodeFromString<List<TraktPlaybackItem>>(episodesPayload)
+        syncLog.i { "endpoint=/sync/playback/movies returned=${moviePlayback.size}" }
+        syncLog.i { "endpoint=/sync/playback/episodes returned=${episodePlayback.size}" }
 
         val inProgressMovies = moviePlayback.mapIndexedNotNull { index, item ->
             mapPlaybackMovie(item = item, fallbackIndex = index)
@@ -339,6 +337,8 @@ object TraktProgressRepository {
         val movieHistoryPayload = payloads[1]
         val episodeHistory = json.decodeFromString<List<TraktHistoryEpisodeItem>>(historyPayload)
         val movieHistory = json.decodeFromString<List<TraktHistoryMovieItem>>(movieHistoryPayload)
+        syncLog.i { "endpoint=/sync/history/episodes?limit=$HISTORY_LIMIT returned=${episodeHistory.size}" }
+        syncLog.i { "endpoint=/sync/history/movies?limit=$HISTORY_LIMIT returned=${movieHistory.size}" }
 
         val completedEpisodes = episodeHistory
             .mapIndexedNotNull { index, item -> mapHistoryEpisode(item = item, fallbackIndex = index) }
@@ -360,6 +360,7 @@ object TraktProgressRepository {
             headers = headers,
         )
         val watchedShows = json.decodeFromString<List<TraktWatchedShowItem>>(payload)
+        syncLog.i { "endpoint=/sync/watched/shows returned=${watchedShows.size}" }
         watchedShows
             .mapNotNull { item ->
                 mapWatchedShowSeed(
@@ -371,30 +372,26 @@ object TraktProgressRepository {
     }
 
     private fun mergeNewestByVideoId(entries: List<WatchProgressEntry>): List<WatchProgressEntry> {
-        val mergedByVideoId = linkedMapOf<String, WatchProgressEntry>()
-        entries.forEach { rawEntry ->
-            val entry = rawEntry.normalizedCompletion()
-            val existing = mergedByVideoId[entry.videoId]
-            if (existing == null || shouldReplaceProgressSnapshotEntry(existing = existing, candidate = entry)) {
-                mergedByVideoId[entry.videoId] = entry
+        return entries
+            .map(WatchProgressEntry::normalizedCompletion)
+            .groupBy(::traktProgressKey)
+            .map { (key, grouped) ->
+                val selected = grouped.maxWith(
+                    compareBy<WatchProgressEntry> { entry -> entry.lastUpdatedEpochMs }
+                        .thenBy { entry -> metadataScore(entry) }
+                        .thenBy { entry -> if (entry.shouldTreatAsInProgressForContinueWatching()) 1 else 0 },
+                )
+                grouped.forEach { candidate ->
+                    if (candidate.videoId != selected.videoId || candidate.source != selected.source) {
+                        syncLog.i {
+                            "snapshot merge key=$key candidate=${traktEntrySummary(candidate)} " +
+                                "winner=${traktEntrySummary(selected)} reason=canonical-freshness"
+                        }
+                    }
+                }
+                selected
             }
-        }
-
-        return mergedByVideoId.values
-            .toList()
             .sortedByDescending { it.lastUpdatedEpochMs }
-    }
-
-    private fun shouldReplaceProgressSnapshotEntry(
-        existing: WatchProgressEntry,
-        candidate: WatchProgressEntry,
-    ): Boolean {
-        val existingInProgress = existing.shouldTreatAsInProgressForContinueWatching()
-        val candidateInProgress = candidate.shouldTreatAsInProgressForContinueWatching()
-        if (existingInProgress != candidateInProgress) {
-            return candidateInProgress
-        }
-        return candidate.lastUpdatedEpochMs > existing.lastUpdatedEpochMs
     }
 
     private fun mergeEntriesPreferRichMetadata(
@@ -428,6 +425,18 @@ object TraktProgressRepository {
         if (!entry.pauseDescription.isNullOrBlank()) score += 1
         return score
     }
+
+    private fun traktProgressKey(entry: WatchProgressEntry): String =
+        if (entry.seasonNumber != null && entry.episodeNumber != null) {
+            "${entry.parentMetaId}_s${entry.seasonNumber}e${entry.episodeNumber}"
+        } else {
+            entry.parentMetaId
+        }
+
+    private fun traktEntrySummary(entry: WatchProgressEntry): String =
+        "${entry.videoId}[parent=${entry.parentMetaId},s=${entry.seasonNumber},e=${entry.episodeNumber}," +
+            "pct=${entry.progressPercent ?: entry.progressFraction * 100f},completed=${entry.isEffectivelyCompleted}," +
+            "updated=${entry.lastUpdatedEpochMs},source=${entry.source}]"
 
     private fun nextRefreshRequestId(): Long {
         refreshRequestId += 1L
@@ -537,7 +546,20 @@ object TraktProgressRepository {
             isCompleted = progressPercent >= TRAKT_COMPLETION_PERCENT_THRESHOLD,
             progressPercent = progressPercent,
             source = WatchProgressSourceTraktPlayback,
-        ).normalizedCompletion()
+        ).normalizedCompletion().also { entry ->
+            logTraktEntry(
+                endpoint = "playback/movies",
+                title = movie.title,
+                ids = movie.ids,
+                season = null,
+                episode = null,
+                videoId = entry.videoId,
+                progressPercent = progressPercent,
+                pausedAt = item.pausedAt,
+                watchedAt = null,
+                historyTimestamp = null,
+            )
+        }
     }
 
     private fun mapPlaybackEpisode(item: TraktPlaybackItem, fallbackIndex: Int): WatchProgressEntry? {
@@ -572,7 +594,20 @@ object TraktProgressRepository {
             isCompleted = progressPercent >= TRAKT_COMPLETION_PERCENT_THRESHOLD,
             progressPercent = progressPercent,
             source = WatchProgressSourceTraktPlayback,
-        ).normalizedCompletion()
+        ).normalizedCompletion().also { entry ->
+            logTraktEntry(
+                endpoint = "playback/episodes",
+                title = show.title,
+                ids = show.ids,
+                season = season,
+                episode = number,
+                videoId = entry.videoId,
+                progressPercent = progressPercent,
+                pausedAt = item.pausedAt,
+                watchedAt = null,
+                historyTimestamp = null,
+            )
+        }
     }
 
     private fun mapHistoryEpisode(item: TraktHistoryEpisodeItem, fallbackIndex: Int): WatchProgressEntry? {
@@ -604,7 +639,20 @@ object TraktProgressRepository {
             isCompleted = true,
             progressPercent = 100f,
             source = WatchProgressSourceTraktHistory,
-        )
+        ).also { entry ->
+            logTraktEntry(
+                endpoint = "history/episodes",
+                title = show.title,
+                ids = show.ids,
+                season = season,
+                episode = number,
+                videoId = entry.videoId,
+                progressPercent = 100f,
+                pausedAt = null,
+                watchedAt = item.watchedAt,
+                historyTimestamp = item.watchedAt,
+            )
+        }
     }
 
     private fun mapHistoryMovie(item: TraktHistoryMovieItem, fallbackIndex: Int): WatchProgressEntry? {
@@ -624,7 +672,20 @@ object TraktProgressRepository {
             isCompleted = true,
             progressPercent = 100f,
             source = WatchProgressSourceTraktHistory,
-        )
+        ).also { entry ->
+            logTraktEntry(
+                endpoint = "history/movies",
+                title = movie.title,
+                ids = movie.ids,
+                season = null,
+                episode = null,
+                videoId = entry.videoId,
+                progressPercent = 100f,
+                pausedAt = null,
+                watchedAt = item.watchedAt,
+                historyTimestamp = item.watchedAt,
+            )
+        }
     }
 
     private fun mapWatchedShowSeed(
@@ -690,8 +751,43 @@ object TraktProgressRepository {
             isCompleted = true,
             progressPercent = 100f,
             source = WatchProgressSourceTraktShowProgress,
-        )
+        ).also { entry ->
+            logTraktEntry(
+                endpoint = "watched/shows",
+                title = show.title,
+                ids = show.ids,
+                season = completedEpisode.season,
+                episode = completedEpisode.episode,
+                videoId = entry.videoId,
+                progressPercent = 100f,
+                pausedAt = null,
+                watchedAt = item.lastWatchedAt,
+                historyTimestamp = item.lastWatchedAt,
+            )
+        }
     }
+
+    private fun logTraktEntry(
+        endpoint: String,
+        title: String?,
+        ids: TraktExternalIds?,
+        season: Int?,
+        episode: Int?,
+        videoId: String,
+        progressPercent: Float?,
+        pausedAt: String?,
+        watchedAt: String?,
+        historyTimestamp: String?,
+    ) {
+        syncLog.i {
+            "entry endpoint=$endpoint title=${title.orEmpty()} ids=${idsSummary(ids)} " +
+                "season=$season episode=$episode canonicalVideoId=$videoId progress=$progressPercent " +
+                "paused_at=$pausedAt watched_at=$watchedAt historyTimestamp=$historyTimestamp"
+        }
+    }
+
+    private fun idsSummary(ids: TraktExternalIds?): String =
+        "trakt=${ids?.trakt} imdb=${ids?.imdb} tmdb=${ids?.tmdb}"
 
     private fun normalizeTraktProgressPercent(rawProgress: Float?): Float? {
         val value = rawProgress ?: return null

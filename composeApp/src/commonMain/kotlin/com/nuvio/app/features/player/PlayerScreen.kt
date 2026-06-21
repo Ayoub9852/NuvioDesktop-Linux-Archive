@@ -37,6 +37,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
@@ -87,6 +88,13 @@ private const val PlayerDoubleTapSeekResetDelayMs = 800L
 private const val PlayerLockedOverlayDurationMs = 2_000L
 private const val PlayerLeftGestureBoundary = 0.4f
 private const val PlayerRightGestureBoundary = 0.6f
+
+private data class SkipLookupIdentity(
+    val imdbId: String? = null,
+    val malId: String? = null,
+    val kitsuId: String? = null,
+    val anilistId: String? = null,
+)
 private const val PlayerVerticalGestureSensitivity = 1f
 private val PlayerSliderOverlayGap = 12.dp
 private val PlayerTimeRowHeight = 36.dp
@@ -191,6 +199,7 @@ fun PlayerScreen(
         val hoverDrivenChrome = !usesNativePlayerChrome && !usesAnimatedPlayerChrome
         var controlsVisible by rememberSaveable { mutableStateOf(true) }
         var playerControlsLocked by rememberSaveable { mutableStateOf(false) }
+        var volumeControlInteracting by remember { mutableStateOf(false) }
         var isHovering by remember { mutableStateOf(false) }
         var cursorVisible by remember { mutableStateOf(true) }
         var pointerActivitySerial by remember { mutableStateOf(0) }
@@ -235,9 +244,12 @@ fun PlayerScreen(
         var playbackLoadGeneration by remember { mutableStateOf(0) }
         var playerController by remember { mutableStateOf<PlayerEngineController?>(null) }
         var playerControllerSourceUrl by remember { mutableStateOf<String?>(null) }
+        var playerAudioLevel by remember { mutableStateOf(PlayerAudioLevel(fraction = 1f, isMuted = false)) }
         var errorMessage by remember { mutableStateOf<String?>(null) }
         val keepScreenAwake = errorMessage == null &&
-            (playbackSnapshot.isPlaying || (shouldPlay && playbackSnapshot.isLoading))
+            activeSourceUrl.isNotBlank() &&
+            playbackSnapshot.isPlaying &&
+            !playbackSnapshot.isEnded
         EnterImmersivePlayerMode(keepScreenAwake = keepScreenAwake)
         var scrubbingPositionMs by remember { mutableStateOf<Long?>(null) }
         var pausedOverlayVisible by remember { mutableStateOf(false) }
@@ -357,7 +369,7 @@ fun PlayerScreen(
                 contentType = contentType ?: parentMetaType,
                 parentMetaId = parentMetaId,
                 parentMetaType = parentMetaType,
-                videoId = activeVideoId?.takeIf { it.isNotBlank() } ?: buildPlaybackVideoId(
+                videoId = buildPlaybackVideoId(
                     parentMetaId = parentMetaId,
                     seasonNumber = activeSeasonNumber,
                     episodeNumber = activeEpisodeNumber,
@@ -436,7 +448,24 @@ fun PlayerScreen(
             }
         }
 
+        LaunchedEffect(playbackSession.videoId, activeSourceUrl, activeSourceAudioUrl) {
+            PlayerRuntimeTrace.info(
+                "CONTINUE_WATCHING player episode started videoId=${playbackSession.videoId} " +
+                    "activeVideoId=${activeVideoId ?: "null"} parentMetaId=$parentMetaId seriesId=$parentMetaId " +
+                    "season=${playbackSession.seasonNumber} episode=${playbackSession.episodeNumber} " +
+                    "positionMs=${playbackSnapshot.positionMs} durationMs=${playbackSnapshot.durationMs} " +
+                    "percent=${currentPlaybackProgressPercent()} sourceLoaded=${activeSourceUrl.isNotBlank() || !activeSourceAudioUrl.isNullOrBlank()}",
+            )
+        }
+
         fun flushWatchProgress() {
+            PlayerRuntimeTrace.info(
+                "CONTINUE_WATCHING progress flush requested videoId=${playbackSession.videoId} " +
+                    "activeVideoId=${activeVideoId ?: "null"} parentMetaId=$parentMetaId seriesId=$parentMetaId " +
+                    "season=${playbackSession.seasonNumber} episode=${playbackSession.episodeNumber} " +
+                    "positionMs=${playbackSnapshot.positionMs} durationMs=${playbackSnapshot.durationMs} " +
+                    "percent=${currentPlaybackProgressPercent()}",
+            )
             emitStopScrobbleForCurrentProgress()
             WatchProgressRepository.flushPlaybackProgress(
                 session = playbackSession,
@@ -696,6 +725,121 @@ fun PlayerScreen(
             }
         }
 
+        fun requestPlayerFocus(reason: String) {
+            PlayerRuntimeTrace.info("PLAYER_KEYS focus requested reason=$reason")
+            runCatching {
+                playerFocusRequester.requestFocus()
+            }.onFailure { error ->
+                PlayerRuntimeTrace.warn("PLAYER_KEYS focus request failed reason=$reason error=${error.message}")
+            }
+        }
+
+        fun Key.toPlayerShortcutKey(): PlayerShortcutKey? =
+            when (this) {
+                Key.Spacebar -> PlayerShortcutKey.Space
+                Key.DirectionLeft -> PlayerShortcutKey.Left
+                Key.DirectionRight -> PlayerShortcutKey.Right
+                Key.M -> PlayerShortcutKey.Mute
+                Key.F -> PlayerShortcutKey.Fullscreen
+                Key.Escape -> PlayerShortcutKey.Escape
+                Key.DirectionUp -> PlayerShortcutKey.VolumeUp
+                Key.DirectionDown -> PlayerShortcutKey.VolumeDown
+                else -> null
+            }
+
+        fun handlePlayerShortcut(
+            key: PlayerShortcutKey,
+            shiftPressed: Boolean,
+            blockingPanelOpen: Boolean,
+            source: String,
+        ): Boolean {
+            if (blockingPanelOpen) {
+                PlayerRuntimeTrace.info("PLAYER_KEYS ignored source=$source key=$key reason=panel-open")
+                return false
+            }
+            if (playerControlsLocked) {
+                PlayerRuntimeTrace.info("PLAYER_KEYS ignored source=$source key=$key reason=controls-locked")
+                return false
+            }
+            if (volumeControlInteracting) {
+                PlayerRuntimeTrace.info("PLAYER_KEYS ignored source=$source key=$key reason=volume-interacting")
+                return false
+            }
+            val before =
+                "playing=${playbackSnapshot.isPlaying} posMs=${playbackSnapshot.positionMs} durationMs=${playbackSnapshot.durationMs}"
+            return when (key) {
+                PlayerShortcutKey.Space -> {
+                    togglePlayback()
+                    PlayerRuntimeTrace.info("PLAYER_KEYS action source=$source key=Space action=togglePlayback before=$before afterPlaying=${!playbackSnapshot.isPlaying}")
+                    true
+                }
+
+                PlayerShortcutKey.Left -> {
+                    val offsetMs = if (shiftPressed) -30_000L else -10_000L
+                    seekBy(offsetMs)
+                    PlayerRuntimeTrace.info("PLAYER_KEYS action source=$source key=${if (shiftPressed) "Shift+Left" else "Left"} action=seekBy offsetMs=$offsetMs before=$before")
+                    true
+                }
+
+                PlayerShortcutKey.Right -> {
+                    val offsetMs = if (shiftPressed) 30_000L else 10_000L
+                    seekBy(offsetMs)
+                    PlayerRuntimeTrace.info("PLAYER_KEYS action source=$source key=${if (shiftPressed) "Shift+Right" else "Right"} action=seekBy offsetMs=$offsetMs before=$before")
+                    true
+                }
+
+                PlayerShortcutKey.Mute -> {
+                    val level = playerController?.toggleMute()
+                    if (level != null) {
+                        playerAudioLevel = level
+                        showVolumeFeedback(level)
+                    }
+                    revealPlayerChrome()
+                    PlayerRuntimeTrace.info("PLAYER_KEYS action source=$source key=M action=toggleMute before=$before muted=${level?.isMuted}")
+                    true
+                }
+
+                PlayerShortcutKey.Fullscreen -> {
+                    toggleFullscreen()
+                    PlayerRuntimeTrace.info("PLAYER_KEYS action source=$source key=F action=toggleFullscreen before=$before")
+                    true
+                }
+
+                PlayerShortcutKey.Escape -> {
+                    if (fullscreenController.isFullscreen) {
+                        toggleFullscreen()
+                        PlayerRuntimeTrace.info("PLAYER_KEYS action source=$source key=Escape action=exitFullscreen before=$before")
+                    } else {
+                        PlayerRuntimeTrace.info("PLAYER_KEYS action source=$source key=Escape action=closePlayer before=$before")
+                        onBackWithProgress()
+                    }
+                    true
+                }
+
+                PlayerShortcutKey.VolumeUp -> {
+                    val level = playerController?.volumeUp()
+                    if (level != null) {
+                        playerAudioLevel = level
+                        showVolumeFeedback(level)
+                    }
+                    revealPlayerChrome()
+                    PlayerRuntimeTrace.info("PLAYER_KEYS action source=$source key=Up action=volumeUp before=$before volume=${level?.fraction} muted=${level?.isMuted}")
+                    true
+                }
+
+                PlayerShortcutKey.VolumeDown -> {
+                    val level = playerController?.volumeDown()
+                    if (level != null) {
+                        playerAudioLevel = level
+                        showVolumeFeedback(level)
+                    }
+                    revealPlayerChrome()
+                    PlayerRuntimeTrace.info("PLAYER_KEYS action source=$source key=Down action=volumeDown before=$before volume=${level?.fraction} muted=${level?.isMuted}")
+                    true
+                }
+            }
+        }
+
         fun handleDoubleTapSeek(direction: PlayerSeekDirection) {
             val currentPositionMs = playbackSnapshot.positionMs.coerceAtLeast(0L)
             val nextState = if (accumulatedSeekState?.direction == direction) {
@@ -892,8 +1036,11 @@ fun PlayerScreen(
                 episodeNumber = episode.episode,
                 fallbackVideoId = epVideoId,
             )
-            val epEntry = WatchProgressRepository.progressForVideo(
-                epVideoId.takeIf { it.isNotBlank() } ?: epResumeVideoId,
+            val epEntry = WatchProgressRepository.progressForEpisode(
+                parentMetaId = parentMetaId,
+                seasonNumber = episode.season,
+                episodeNumber = episode.episode,
+                fallbackVideoId = epVideoId.takeIf { it.isNotBlank() } ?: epResumeVideoId,
             )
                 ?.takeIf { !it.isCompleted }
             val epResumeFraction = epEntry?.progressPercent
@@ -957,7 +1104,12 @@ fun PlayerScreen(
                 fallbackVideoId = episode.id,
             )
             val resolvedVideoId = episode.id.takeIf { it.isNotBlank() } ?: fallbackVideoId
-            val epEntry = WatchProgressRepository.progressForVideo(resolvedVideoId)
+            val epEntry = WatchProgressRepository.progressForEpisode(
+                parentMetaId = parentMetaId,
+                seasonNumber = episode.season,
+                episodeNumber = episode.episode,
+                fallbackVideoId = resolvedVideoId,
+            )
                 ?.takeIf { !it.isCompleted }
             val epResumeFraction = epEntry?.progressPercent
                 ?.takeIf { it > 0f }
@@ -1177,6 +1329,15 @@ fun PlayerScreen(
             playerController?.applySubtitleStyle(subtitleStyle)
         }
 
+        LaunchedEffect(playerController, playerControllerSourceUrl) {
+            while (playerController != null && playerControllerSourceUrl == activeSourceUrl) {
+                playerController?.currentVolume()?.let { level ->
+                    playerAudioLevel = level
+                }
+                delay(1_000L)
+            }
+        }
+
         LaunchedEffect(showSubtitleModal, activeSubtitleTab, contentType, activeVideoId) {
             if (!showSubtitleModal || activeSubtitleTab != SubtitleTab.Addons) return@LaunchedEffect
             if (!isLoadingAddonSubtitles && addonSubtitles.isEmpty()) {
@@ -1261,6 +1422,7 @@ fun PlayerScreen(
             pointerActivitySerial,
             controlsVisible,
             playerControlsLocked,
+            volumeControlInteracting,
             playbackSnapshot.isPlaying,
             showSourcesPanel,
             showEpisodesPanel,
@@ -1271,6 +1433,7 @@ fun PlayerScreen(
             if (!hoverDrivenChrome) return@LaunchedEffect
             if (!controlsVisible) return@LaunchedEffect
             if (playerControlsLocked) return@LaunchedEffect
+            if (volumeControlInteracting) return@LaunchedEffect
             if (!playbackSnapshot.isPlaying) return@LaunchedEffect
 
             val blockingPanelOpen =
@@ -1303,6 +1466,7 @@ fun PlayerScreen(
                                 errorMessage != null ||
                                 pausedOverlayVisible ||
                                 scrubbingPositionMs != null ||
+                                volumeControlInteracting ||
                                 blockingPanelOpen ||
                                 liveGestureFeedback != null ||
                                 gestureFeedback != null
@@ -1391,6 +1555,13 @@ fun PlayerScreen(
                 return@LaunchedEffect
             }
             lastProgressPersistEpochMs = now
+            PlayerRuntimeTrace.info(
+                "CONTINUE_WATCHING periodic progress videoId=${playbackSession.videoId} " +
+                    "activeVideoId=${activeVideoId ?: "null"} parentMetaId=$parentMetaId seriesId=$parentMetaId " +
+                    "season=${playbackSession.seasonNumber} episode=${playbackSession.episodeNumber} " +
+                    "positionMs=${playbackSnapshot.positionMs} durationMs=${playbackSnapshot.durationMs} " +
+                    "percent=${currentPlaybackProgressPercent()}",
+            )
             WatchProgressRepository.upsertPlaybackProgress(
                 session = playbackSession,
                 snapshot = playbackSnapshot,
@@ -1398,7 +1569,7 @@ fun PlayerScreen(
         }
 
         // Fetch skip intervals when episode changes
-        LaunchedEffect(activeVideoId, activeSeasonNumber, activeEpisodeNumber) {
+        LaunchedEffect(activeVideoId, videoId, parentMetaId, activeSeasonNumber, activeEpisodeNumber) {
             skipIntervals = emptyList()
             activeSkipInterval = null
             skipIntervalDismissed = false
@@ -1408,35 +1579,119 @@ fun PlayerScreen(
 
             val season = activeSeasonNumber
             val episode = activeEpisodeNumber
-            val vid = activeVideoId
 
-            if (season == null || episode == null || vid == null) return@LaunchedEffect
+            if (season == null || episode == null) {
+                PlayerRuntimeTrace.info(
+                    "SKIP_LOOKUP lookup skipped reason=invalid-episode " +
+                        "activeVideoId=${activeVideoId ?: "null"} videoId=${videoId ?: "null"} " +
+                        "contentType=${contentType ?: parentMetaType} season=$season episode=$episode",
+                )
+                return@LaunchedEffect
+            }
 
             launch {
-                val imdbId = vid.split(":").firstOrNull()?.takeIf { it.startsWith("tt") }
-                val intervals = SkipIntroRepository.getSkipIntervals(
-                    imdbId = imdbId,
-                    season = season,
-                    episode = episode,
+                val identity = resolveSkipLookupIdentity(activeVideoId, videoId, parentMetaId)
+                val path = when {
+                    identity.imdbId != null -> "imdb"
+                    identity.malId != null -> "mal"
+                    identity.kitsuId != null -> "kitsu"
+                    identity.anilistId != null -> "anilist"
+                    else -> "none"
+                }
+                PlayerRuntimeTrace.info(
+                    "SKIP_LOOKUP lookup started=${
+                        path != "none"
+                    } activeVideoId=${activeVideoId ?: "null"} videoId=${videoId ?: "null"} parentMetaId=$parentMetaId " +
+                        "contentType=${contentType ?: parentMetaType} season=$season episode=$episode " +
+                        "parsedImdbId=${identity.imdbId ?: "null"} parsedMalId=${identity.malId ?: "null"} " +
+                        "parsedKitsuId=${identity.kitsuId ?: "null"} parsedAnilistId=${identity.anilistId ?: "null"} " +
+                        "skipIntroEnabled=${playerSettingsUiState.skipIntroEnabled} " +
+                        "animeSkipEnabled=${playerSettingsUiState.animeSkipEnabled} " +
+                        "animeSkipClientIdPresent=${playerSettingsUiState.animeSkipClientId.isNotBlank()} path=$path",
+                )
+                if (!playerSettingsUiState.animeSkipEnabled && playerSettingsUiState.animeSkipClientId.isNotBlank()) {
+                    PlayerRuntimeTrace.info("SKIP_LOOKUP animeSkip disabled although clientId is present")
+                }
+
+                val intervals = when {
+                    identity.imdbId != null -> SkipIntroRepository.getSkipIntervals(
+                        imdbId = identity.imdbId,
+                        season = season,
+                        episode = episode,
+                    )
+                    identity.malId != null -> SkipIntroRepository.getSkipIntervalsForMal(
+                        malId = identity.malId,
+                        episode = episode,
+                    )
+                    identity.kitsuId != null -> SkipIntroRepository.getSkipIntervalsForKitsu(
+                        kitsuId = identity.kitsuId,
+                        episode = episode,
+                    )
+                    identity.anilistId != null -> SkipIntroRepository.getSkipIntervalsForAnilist(
+                        anilistId = identity.anilistId,
+                        season = season,
+                        episode = episode,
+                    )
+                    else -> {
+                        PlayerRuntimeTrace.info("SKIP_LOOKUP lookup end path=none reason=no-identity")
+                        emptyList()
+                    }
+                }
+                PlayerRuntimeTrace.info(
+                    "SKIP_LOOKUP final intervals selected count=${intervals.size} " +
+                        "items=${intervals.joinToString(prefix = "[", postfix = "]") { "${it.provider}:${it.type}@${it.startTime}-${it.endTime}" }}",
                 )
                 skipIntervals = intervals
             }
         }
 
         // Update active skip interval based on playback position
-        LaunchedEffect(playbackSnapshot.positionMs, skipIntervals) {
+        LaunchedEffect(playbackSnapshot.positionMs, skipIntervals, playerControlsLocked, controlsVisible, skipIntervalDismissed) {
+            val positionSec = playbackSnapshot.positionMs / 1000.0
             if (skipIntervals.isEmpty()) {
+                if (PlayerRuntimeTrace.skipDebugEnabled) {
+                    PlayerRuntimeTrace.info(
+                        "SKIP_LOOKUP button hidden reason=no-intervals positionSec=$positionSec " +
+                            "activeVideoId=${activeVideoId ?: "null"} season=$activeSeasonNumber episode=$activeEpisodeNumber",
+                    )
+                }
                 activeSkipInterval = null
                 return@LaunchedEffect
             }
-            val positionSec = playbackSnapshot.positionMs / 1000.0
             val current = skipIntervals.firstOrNull { interval ->
                 positionSec >= interval.startTime && positionSec < interval.endTime
             }
+            if (PlayerRuntimeTrace.skipDebugEnabled && current == null) {
+                PlayerRuntimeTrace.info(
+                    "SKIP_LOOKUP intervals found but hidden positionSec=$positionSec " +
+                        "nextInterval=${skipIntervals.firstOrNull { it.startTime > positionSec } ?: skipIntervals.firstOrNull()} " +
+                        "reason=outside-interval controlsLocked=$playerControlsLocked dismissed=$skipIntervalDismissed controlsVisible=$controlsVisible",
+                )
+            }
             if (current != activeSkipInterval) {
+                if (PlayerRuntimeTrace.skipDebugEnabled) {
+                    PlayerRuntimeTrace.info(
+                        "SKIP_LOOKUP active interval changed positionSec=$positionSec " +
+                            "current=${current?.let { "${it.provider}:${it.type}@${it.startTime}-${it.endTime}" } ?: "null"}",
+                    )
+                }
                 activeSkipInterval = current
                 if (current != null) skipIntervalDismissed = false
             }
+        }
+
+        LaunchedEffect(activeSkipInterval, playerControlsLocked, controlsVisible, skipIntervalDismissed) {
+            if (!PlayerRuntimeTrace.skipDebugEnabled) return@LaunchedEffect
+            val interval = activeSkipInterval ?: return@LaunchedEffect
+            val reason = when {
+                playerControlsLocked -> "controls-locked"
+                skipIntervalDismissed && !controlsVisible -> "dismissed-controls-hidden"
+                else -> "visible-or-controls-visible"
+            }
+            PlayerRuntimeTrace.info(
+                "SKIP_LOOKUP button visibility interval=${interval.provider}:${interval.type}@${interval.startTime}-${interval.endTime} " +
+                    "reason=$reason controlsLocked=$playerControlsLocked controlsVisible=$controlsVisible dismissed=$skipIntervalDismissed",
+            )
         }
 
         // Resolve next episode info when episodes list or current episode changes
@@ -1525,22 +1780,46 @@ fun PlayerScreen(
         }
 
         LaunchedEffect(Unit) {
-            playerFocusRequester.requestFocus()
+            requestPlayerFocus("player-open")
         }
 
-        LaunchedEffect(fullscreenController.isFullscreen) {
-            playerFocusRequester.requestFocus()
+        LaunchedEffect(fullscreenController.isFullscreen, playbackSnapshot.isPlaying) {
+            requestPlayerFocus("fullscreen-or-playback-change fullscreen=${fullscreenController.isFullscreen} playing=${playbackSnapshot.isPlaying}")
         }
+
+        ManagePlayerKeyboardShortcuts(
+            enabled = true,
+            inputBlocked = blockingPanelOpen || playerControlsLocked || volumeControlInteracting,
+            onShortcut = { key, shiftPressed ->
+                handlePlayerShortcut(
+                    key = key,
+                    shiftPressed = shiftPressed,
+                    blockingPanelOpen = blockingPanelOpen,
+                    source = "desktop-dispatcher",
+                )
+            },
+            onRequestFocus = ::requestPlayerFocus,
+        )
 
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .onPreviewKeyEvent { event ->
-                    if (event.type == KeyEventType.KeyUp && event.key == Key.F) {
-                        toggleFullscreen()
-                        true
-                    } else {
+                    if (event.type != KeyEventType.KeyUp) {
                         false
+                    } else {
+                        val shortcutKey = event.key.toPlayerShortcutKey()
+                        if (shortcutKey == null) {
+                            false
+                        } else {
+                            PlayerRuntimeTrace.info("PLAYER_KEYS compose event key=$shortcutKey shift=${event.isShiftPressed}")
+                            handlePlayerShortcut(
+                                key = shortcutKey,
+                                shiftPressed = event.isShiftPressed,
+                                blockingPanelOpen = blockingPanelOpen,
+                                source = "compose-preview",
+                            )
+                        }
                     }
                 }
                 .focusRequester(playerFocusRequester)
@@ -1567,6 +1846,7 @@ fun PlayerScreen(
                 .pointerInput(layoutSize) {
                     detectTapGestures(
                         onPress = {
+                            requestPlayerFocus("surface-press")
                             tryAwaitRelease()
                             deactivateHoldToSpeedState.value()
                         },
@@ -1816,6 +2096,31 @@ fun PlayerScreen(
                     onAudioClick = {
                         refreshTracks()
                         showAudioModal = true
+                    },
+                    audioLevel = playerAudioLevel,
+                    onVolumeClick = {
+                        playerController?.toggleMute()?.let { level ->
+                            playerAudioLevel = level
+                            showVolumeFeedback(level)
+                            PlayerRuntimeTrace.info(
+                                "volume control button clicked action=toggleMute volume=${level.fraction} muted=${level.isMuted}",
+                            )
+                        }
+                    },
+                    onVolumeChange = { fraction ->
+                        val optimistic = playerAudioLevel.copy(
+                            fraction = fraction.coerceIn(0f, 1f),
+                            isMuted = fraction <= 0f,
+                        )
+                        playerAudioLevel = optimistic
+                        playerController?.setVolume(fraction)?.let { playerAudioLevel = it }
+                    },
+                    onVolumeChangeFinished = {
+                        playerController?.currentVolume()?.let { playerAudioLevel = it }
+                    },
+                    onVolumeInteractionChange = { active ->
+                        volumeControlInteracting = active
+                        if (active) revealPlayerChrome()
                     },
                     onSourcesClick = if (activeVideoId != null) { { openSourcesPanel() } } else null,
                     onEpisodesClick = if (isSeries) { { openEpisodesPanel() } } else null,
@@ -2100,6 +2405,58 @@ fun PlayerScreen(
             }
         }
     }
+}
+
+private fun resolveSkipLookupIdentity(vararg candidates: String?): SkipLookupIdentity {
+    val identities = candidates
+        .filterNotNull()
+        .map(String::trim)
+        .filter(String::isNotBlank)
+        .map(::parseSkipLookupIdentity)
+
+    return SkipLookupIdentity(
+        imdbId = identities.firstNotNullOfOrNull { it.imdbId },
+        malId = identities.firstNotNullOfOrNull { it.malId },
+        kitsuId = identities.firstNotNullOfOrNull { it.kitsuId },
+        anilistId = identities.firstNotNullOfOrNull { it.anilistId },
+    )
+}
+
+private fun parseSkipLookupIdentity(value: String): SkipLookupIdentity {
+    val tokens = value
+        .split(':', '/', '|', '?', '&', '=', '#')
+        .map(String::trim)
+        .filter(String::isNotBlank)
+
+    val imdbId = tokens.firstOrNull { token ->
+        token.startsWith("tt") && token.drop(2).all(Char::isDigit)
+    }
+
+    fun tokenAfter(vararg names: String): String? {
+        for (index in 0 until tokens.lastIndex) {
+            val token = tokens[index].lowercase()
+            if (names.any { it == token }) {
+                return tokens[index + 1].takeIf { next -> next.all(Char::isDigit) }
+            }
+        }
+        return null
+    }
+
+    fun regexId(vararg names: String): String? {
+        val source = value.lowercase()
+        for (name in names) {
+            val match = Regex("""(?:^|[^a-z0-9])$name[:=/|](\d+)""").find(source)
+            if (match != null) return match.groupValues[1]
+        }
+        return null
+    }
+
+    return SkipLookupIdentity(
+        imdbId = imdbId,
+        malId = tokenAfter("mal", "myanimelist") ?: regexId("mal", "myanimelist"),
+        kitsuId = tokenAfter("kitsu") ?: regexId("kitsu"),
+        anilistId = tokenAfter("anilist", "ani-list") ?: regexId("anilist", "ani-list"),
+    )
 }
 
 private fun <T> findPreferredTrackIndex(

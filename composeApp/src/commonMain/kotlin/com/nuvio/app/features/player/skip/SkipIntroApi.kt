@@ -1,7 +1,7 @@
 package com.nuvio.app.features.player.skip
 
-import com.nuvio.app.features.addons.httpGetText
-import com.nuvio.app.features.addons.httpPostJsonWithHeaders
+import com.nuvio.app.features.addons.httpRequestRaw
+import com.nuvio.app.features.player.PlayerRuntimeTrace
 import kotlinx.serialization.json.Json
 
 internal object SkipIntroApi {
@@ -11,6 +11,14 @@ internal object SkipIntroApi {
     private const val ANISKIP_BASE = "https://api.aniskip.com/v2/"
     private const val ARM_BASE = "https://arm.haglund.dev/api/v2/"
     private const val ANIMESKIP_BASE = "https://api.anime-skip.com/"
+
+    private fun log(message: String) {
+        PlayerRuntimeTrace.info("SKIP_LOOKUP $message")
+    }
+
+    private fun warn(message: String) {
+        PlayerRuntimeTrace.warn("SKIP_LOOKUP $message")
+    }
 
     // --- IntroDb ---
 
@@ -23,9 +31,12 @@ internal object SkipIntroApi {
         if (baseUrl.isBlank()) return null
         val url = "$baseUrl/segments?imdb_id=$imdbId&season=$season&episode=$episode"
         return try {
-            val text = httpGetText(url)
-            json.decodeFromString<IntroDbSegmentsResponse>(text)
-        } catch (_: Exception) {
+            val response = httpRequestRaw("GET", url, emptyMap(), "")
+            log("provider=introdb status=${response.status} imdbId=$imdbId season=$season episode=$episode")
+            if (response.status !in 200..299) return null
+            json.decodeFromString<IntroDbSegmentsResponse>(response.body)
+        } catch (error: Exception) {
+            warn("provider=introdb failed imdbId=$imdbId season=$season episode=$episode error=${error.message}")
             null
         }
     }
@@ -95,9 +106,12 @@ internal object SkipIntroApi {
         val types = "op,ed,recap,mixed-op,mixed-ed"
         val url = "${ANISKIP_BASE}skip-times/$malId/$episode?types=$types&episodeLength=0"
         return try {
-            val text = httpGetText(url)
-            json.decodeFromString<AniSkipResponse>(text)
-        } catch (_: Exception) {
+            val response = httpRequestRaw("GET", url, emptyMap(), "")
+            log("provider=aniskip status=${response.status} malId=$malId episode=$episode")
+            if (response.status !in 200..299) return null
+            json.decodeFromString<AniSkipResponse>(response.body)
+        } catch (error: Exception) {
+            warn("provider=aniskip failed malId=$malId episode=$episode error=${error.message}")
             null
         }
     }
@@ -107,9 +121,12 @@ internal object SkipIntroApi {
     suspend fun resolveImdbToAll(imdbId: String): List<ArmEntry> {
         val url = "${ARM_BASE}imdb?id=$imdbId&include=myanimelist,anilist,kitsu"
         return try {
-            val text = httpGetText(url)
-            json.decodeFromString<List<ArmEntry>>(text)
-        } catch (_: Exception) {
+            val response = httpRequestRaw("GET", url, emptyMap(), "")
+            log("provider=arm path=imdb status=${response.status} imdbId=$imdbId")
+            if (response.status !in 200..299) return emptyList()
+            json.decodeFromString<List<ArmEntry>>(response.body)
+        } catch (error: Exception) {
+            warn("provider=arm path=imdb failed imdbId=$imdbId error=${error.message}")
             emptyList()
         }
     }
@@ -117,9 +134,12 @@ internal object SkipIntroApi {
     suspend fun resolveMalToImdb(malId: String): ArmEntry? {
         val url = "${ARM_BASE}ids?source=myanimelist&id=$malId&include=imdb"
         return try {
-            val text = httpGetText(url)
-            json.decodeFromString<ArmEntry>(text)
-        } catch (_: Exception) {
+            val response = httpRequestRaw("GET", url, emptyMap(), "")
+            log("provider=arm path=mal-to-imdb status=${response.status} malId=$malId")
+            if (response.status !in 200..299) return null
+            json.decodeFromString<ArmEntry>(response.body)
+        } catch (error: Exception) {
+            warn("provider=arm path=mal-to-imdb failed malId=$malId error=${error.message}")
             null
         }
     }
@@ -127,9 +147,12 @@ internal object SkipIntroApi {
     suspend fun resolveMalToAnilist(malId: String): ArmEntry? {
         val url = "${ARM_BASE}ids?source=myanimelist&id=$malId&include=anilist"
         return try {
-            val text = httpGetText(url)
-            json.decodeFromString<ArmEntry>(text)
-        } catch (_: Exception) {
+            val response = httpRequestRaw("GET", url, emptyMap(), "")
+            log("provider=arm path=mal-to-anilist status=${response.status} malId=$malId")
+            if (response.status !in 200..299) return null
+            json.decodeFromString<ArmEntry>(response.body)
+        } catch (error: Exception) {
+            warn("provider=arm path=mal-to-anilist failed malId=$malId error=${error.message}")
             null
         }
     }
@@ -137,9 +160,12 @@ internal object SkipIntroApi {
     suspend fun resolveKitsuToMal(kitsuId: String): ArmEntry? {
         val url = "${ARM_BASE}ids?source=kitsu&id=$kitsuId&include=myanimelist"
         return try {
-            val text = httpGetText(url)
-            json.decodeFromString<ArmEntry>(text)
-        } catch (_: Exception) {
+            val response = httpRequestRaw("GET", url, emptyMap(), "")
+            log("provider=arm path=kitsu-to-mal status=${response.status} kitsuId=$kitsuId")
+            if (response.status !in 200..299) return null
+            json.decodeFromString<ArmEntry>(response.body)
+        } catch (error: Exception) {
+            warn("provider=arm path=kitsu-to-mal failed kitsuId=$kitsuId error=${error.message}")
             null
         }
     }
@@ -147,9 +173,12 @@ internal object SkipIntroApi {
     suspend fun resolveKitsuToAnilist(kitsuId: String): ArmEntry? {
         val url = "${ARM_BASE}ids?source=kitsu&id=$kitsuId&include=anilist"
         return try {
-            val text = httpGetText(url)
-            json.decodeFromString<ArmEntry>(text)
-        } catch (_: Exception) {
+            val response = httpRequestRaw("GET", url, emptyMap(), "")
+            log("provider=arm path=kitsu-to-anilist status=${response.status} kitsuId=$kitsuId")
+            if (response.status !in 200..299) return null
+            json.decodeFromString<ArmEntry>(response.body)
+        } catch (error: Exception) {
+            warn("provider=arm path=kitsu-to-anilist failed kitsuId=$kitsuId error=${error.message}")
             null
         }
     }
@@ -157,9 +186,12 @@ internal object SkipIntroApi {
     suspend fun resolveKitsuToImdb(kitsuId: String): ArmEntry? {
         val url = "${ARM_BASE}ids?source=kitsu&id=$kitsuId&include=imdb"
         return try {
-            val text = httpGetText(url)
-            json.decodeFromString<ArmEntry>(text)
-        } catch (_: Exception) {
+            val response = httpRequestRaw("GET", url, emptyMap(), "")
+            log("provider=arm path=kitsu-to-imdb status=${response.status} kitsuId=$kitsuId")
+            if (response.status !in 200..299) return null
+            json.decodeFromString<ArmEntry>(response.body)
+        } catch (error: Exception) {
+            warn("provider=arm path=kitsu-to-imdb failed kitsuId=$kitsuId error=${error.message}")
             null
         }
     }
@@ -178,10 +210,20 @@ internal object SkipIntroApi {
             "Content-Type" to "application/json",
         )
         return try {
-            val text = httpPostJsonWithHeaders(ANIMESKIP_BASE + "graphql", body, headers)
-            json.decodeFromString<AnimeSkipGraphqlResponse>(text)
-        } catch (_: Exception) {
+            val response = httpRequestRaw("POST", ANIMESKIP_BASE + "graphql", headers, body)
+            log("provider=animeskip status=${response.status} query=${classifyAnimeSkipQuery(graphqlQuery)}")
+            if (response.status !in 200..299) return null
+            json.decodeFromString<AnimeSkipGraphqlResponse>(response.body)
+        } catch (error: Exception) {
+            warn("provider=animeskip failed query=${classifyAnimeSkipQuery(graphqlQuery)} error=${error.message}")
             null
         }
     }
+
+    private fun classifyAnimeSkipQuery(query: String): String =
+        when {
+            query.contains("findShowsByExternalId") -> "findShowsByExternalId"
+            query.contains("findEpisodesByShowId") -> "findEpisodesByShowId"
+            else -> "unknown"
+        }
 }
