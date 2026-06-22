@@ -176,8 +176,8 @@ chmod +x "$wrapper"
 
 icon_source=""
 for candidate in \
-    "$install_dir/lib/Nuvio.png" \
     "$repo_root/composeApp/src/commonMain/composeResources/drawable/nuvio_window_icon.png" \
+    "$install_dir/lib/Nuvio.png" \
     "$repo_root/composeApp/src/commonMain/composeResources/drawable/app_logo_wordmark.png"
 do
     if [[ -f "$candidate" ]]; then

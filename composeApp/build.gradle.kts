@@ -562,6 +562,10 @@ compose.desktop {
                     """.trimIndent()
                 }
             }
+
+            linux {
+                iconFile.set(project.file("src/commonMain/composeResources/drawable/nuvio_window_icon.png"))
+            }
         }
     }
 }
