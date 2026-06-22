@@ -199,6 +199,7 @@ Terminal=false
 Type=Application
 Categories=AudioVideo;Video;Player;
 StartupNotify=true
+StartupWMClass=com-nuvio-app-DesktopAppKt
 MimeType=x-scheme-handler/nuvio;
 EOF
 
