@@ -38,6 +38,7 @@ import com.nuvio.app.features.streams.StreamItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.awt.Component
+import java.awt.Container
 import java.awt.Cursor
 import java.awt.EventQueue
 import java.awt.Frame
@@ -51,6 +52,7 @@ import java.awt.event.WindowEvent
 import java.awt.event.WindowFocusListener
 import java.awt.image.BufferedImage
 import java.util.Locale
+import java.util.IdentityHashMap
 import javax.swing.SwingUtilities
 import javax.swing.text.JTextComponent
 import kotlinx.coroutines.delay
@@ -943,18 +945,20 @@ actual fun ManagePlayerPictureInPicture(
 actual fun ManagePlayerCursorVisibility(visible: Boolean) {
     val window = LocalDesktopWindow.current
     val hiddenCursor = remember { createHiddenPlayerCursor() }
+    val previousCursors = remember(window) { IdentityHashMap<Component, Cursor?>() }
 
-    DisposableEffect(window) {
-        val previousCursor = window?.cursor
+    DisposableEffect(window, previousCursors) {
         onDispose {
-            if (window != null && previousCursor != null) {
-                window.cursor = previousCursor
-            }
+            restorePlayerComponentCursors(previousCursors)
         }
     }
 
     SideEffect {
-        window?.cursor = if (visible) Cursor.getDefaultCursor() else hiddenCursor
+        if (visible) {
+            restorePlayerComponentCursors(previousCursors)
+        } else if (window != null) {
+            applyPlayerCursorRecursively(window, hiddenCursor, previousCursors)
+        }
     }
 }
 
@@ -1211,6 +1215,29 @@ private fun ComposeWindow.exitPlayerFullscreen(previousPlacement: WindowPlacemen
 private fun createHiddenPlayerCursor(): Cursor {
     val image = BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB)
     return Toolkit.getDefaultToolkit().createCustomCursor(image, Point(0, 0), "nuvio-player-hidden-cursor")
+}
+
+private fun applyPlayerCursorRecursively(
+    component: Component,
+    cursor: Cursor,
+    previousCursors: IdentityHashMap<Component, Cursor?>,
+) {
+    if (!previousCursors.containsKey(component)) {
+        previousCursors[component] = component.cursor
+    }
+    component.cursor = cursor
+    if (component is Container) {
+        component.components.forEach { child ->
+            applyPlayerCursorRecursively(child, cursor, previousCursors)
+        }
+    }
+}
+
+private fun restorePlayerComponentCursors(previousCursors: IdentityHashMap<Component, Cursor?>) {
+    previousCursors.forEach { (component, cursor) ->
+        component.cursor = cursor
+    }
+    previousCursors.clear()
 }
 
 actual val usesNativePlayerChrome: Boolean
