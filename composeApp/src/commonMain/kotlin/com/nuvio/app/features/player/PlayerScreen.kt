@@ -82,7 +82,6 @@ import kotlin.math.roundToInt
 
 private const val PlaybackProgressPersistIntervalMs = 60_000L
 private const val PlayerControlsAutoHideDelayMs = 3_500L
-private const val PlayerCursorAutoHideDelayMs = 700L
 private const val PlayerDoubleTapSeekStepMs = 10_000L
 private const val PlayerDoubleTapSeekResetDelayMs = 800L
 private const val PlayerLockedOverlayDurationMs = 2_000L
@@ -1489,13 +1488,8 @@ fun PlayerScreen(
                 return@LaunchedEffect
             }
 
-            // Keep cursor visible briefly after controls/chrome have just hidden.
-            cursorVisible = true
-            delay(PlayerCursorAutoHideDelayMs)
-
-            if (!cursorHoldReasonVisibleState.value) {
-                cursorVisible = false
-            }
+            // Hide in the same state transition as the player chrome.
+            cursorVisible = cursorHoldReasonVisibleState.value
         }
 
         ManagePlayerCursorVisibility(

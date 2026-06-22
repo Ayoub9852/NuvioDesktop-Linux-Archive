@@ -1222,14 +1222,22 @@ private fun applyPlayerCursorRecursively(
     cursor: Cursor,
     previousCursors: IdentityHashMap<Component, Cursor?>,
 ) {
-    if (!previousCursors.containsKey(component)) {
-        previousCursors[component] = component.cursor
-    }
-    component.cursor = cursor
-    if (component is Container) {
-        component.components.forEach { child ->
-            applyPlayerCursorRecursively(child, cursor, previousCursors)
+    val components = buildList { collectPlayerComponents(component, this) }
+    // Capture every cursor before changing the parent. Component.getCursor()
+    // can inherit from its parent, so a one-pass traversal records the hidden
+    // parent cursor as the child's previous cursor and cannot restore it.
+    components.forEach { current ->
+        if (!previousCursors.containsKey(current)) {
+            previousCursors[current] = current.cursor
         }
+    }
+    components.forEach { current -> current.cursor = cursor }
+}
+
+private fun collectPlayerComponents(component: Component, destination: MutableList<Component>) {
+    destination += component
+    if (component is Container) {
+        component.components.forEach { child -> collectPlayerComponents(child, destination) }
     }
 }
 
